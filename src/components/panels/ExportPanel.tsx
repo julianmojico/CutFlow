@@ -1,0 +1,379 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Blend, Check, Copy, Download, Film, FileText, X } from '../Icons';
+import type {
+  AspectRatioPreset,
+  CutSegment,
+  FitMode,
+  SubtitleCue,
+  SubtitleStyleConfig,
+  VideoAsset,
+  VideoEffectsConfig,
+} from '../../types/editor';
+import { trackEvent } from '../../utils/analytics';
+import { formatBytes, formatTimecode, generateSrt, getEditedDuration } from '../../utils/audioEngine';
+import { exportEditedVideo } from '../../utils/exportEngine';
+import { resolveCanvasDimensions } from '../../utils/subtitleRenderer';
+
+interface ExportPanelProps {
+  asset: VideoAsset;
+  cuts: CutSegment[];
+  cues: SubtitleCue[];
+  subtitleStyle: SubtitleStyleConfig;
+  effects: VideoEffectsConfig;
+  aspectRatio: AspectRatioPreset;
+  fitMode: FitMode;
+  onChangeAspectRatio: (preset: AspectRatioPreset) => void;
+  onToggleFitMode: () => void;
+  onToggleBlurBorders: () => void;
+}
+
+export const ExportPanel: React.FC<ExportPanelProps> = ({
+  asset,
+  cuts,
+  cues,
+  subtitleStyle,
+  effects,
+  aspectRatio,
+  fitMode,
+  onChangeAspectRatio,
+  onToggleFitMode,
+  onToggleBlurBorders,
+}) => {
+  const [applyCutsToSrt, setApplyCutsToSrt] = useState(true);
+  const [copiedSrt, setCopiedSrt] = useState(false);
+  const [quality, setQuality] = useState<'original' | '1080p' | '720p'>('1080p');
+
+  const [isExporting, setIsExporting] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [stageLabel, setStageLabel] = useState('');
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportedUrl, setExportedUrl] = useState<{
+    url: string;
+    fileName: string;
+    size: number;
+    duration: number;
+  } | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!exportedUrl) return;
+    const urlToRevoke = exportedUrl.url;
+    const timer = window.setTimeout(() => {
+      URL.revokeObjectURL(urlToRevoke);
+      setExportedUrl((prev) => (prev?.url === urlToRevoke ? null : prev));
+    }, 60 * 60 * 1000);
+
+    return () => {
+      window.clearTimeout(timer);
+      URL.revokeObjectURL(urlToRevoke);
+    };
+  }, [exportedUrl]);
+
+  useEffect(() => {
+    setExportedUrl(null);
+  }, [asset.url]);
+
+  const srtContent = useMemo(
+    () => generateSrt(cues, cuts, applyCutsToSrt),
+    [applyCutsToSrt, cues, cuts]
+  );
+
+  const targetDims = useMemo(
+    () => resolveCanvasDimensions(aspectRatio, asset.width, asset.height, quality),
+    [aspectRatio, asset.height, asset.width, quality]
+  );
+
+  const editedDuration = useMemo(
+    () => getEditedDuration(asset.duration, cuts),
+    [asset.duration, cuts]
+  );
+
+  const baseName = asset.fileName.replace(/\.[^/.]+$/, '') || 'cutflow-video';
+
+  const handleDownloadSrt = () => {
+    const blob = new Blob([srtContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${baseName}.srt`;
+    a.click();
+    trackEvent('export_srt', { cues_count: cues.length });
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleCopySrt = async () => {
+    if (!srtContent) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(srtContent);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = srtContent;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopiedSrt(true);
+    setTimeout(() => setCopiedSrt(false), 1800);
+  };
+
+  const handleStartVideoExport = async () => {
+    setExportError(null);
+    if (exportedUrl) {
+      URL.revokeObjectURL(exportedUrl.url);
+      setExportedUrl(null);
+    }
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsExporting(true);
+    setProgress(0);
+    setStageLabel('Preparando motor de renderizado...');
+
+    try {
+      const result = await exportEditedVideo({
+        asset,
+        cuts,
+        cues,
+        subtitleStyle,
+        effects,
+        aspectRatio,
+        fitMode,
+        quality,
+        onProgress: (pct, label) => {
+          setProgress(pct);
+          setStageLabel(label);
+        },
+        signal: controller.signal,
+      });
+
+      const url = URL.createObjectURL(result.blob);
+      const fileName = `${baseName}_subtitulado.${result.extension}`;
+      setExportedUrl({
+        url,
+        fileName,
+        size: result.blob.size,
+        duration: result.duration,
+      });
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      trackEvent('export_mp4', {
+        aspect_ratio: aspectRatio,
+        quality,
+        blur_borders: effects.blurBorders && fitMode === 'contain',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error al exportar el video.';
+      setExportError(msg);
+    } finally {
+      setIsExporting(false);
+      abortRef.current = null;
+    }
+  };
+
+  const handleCancelExport = () => {
+    abortRef.current?.abort();
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* 1. Primary: Export MP4 Video with Burned-in Subtitles & Effects */}
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Film className="h-4 w-4 shrink-0 text-[#FF453A]" />
+            <h2 className="font-display text-base font-semibold text-white">
+              Exportar video MP4 con subtítulos
+            </h2>
+          </div>
+          <span className="font-mono text-xs text-zinc-400 tabular-nums">
+            {targetDims.width}×{targetDims.height} · {formatTimecode(editedDuration)}
+          </span>
+        </div>
+
+        <div className="space-y-2">
+          <span className="text-xs font-medium text-zinc-300">Formato de lienzo</span>
+          <div className="grid grid-cols-3 gap-1.5">
+            {(['original', '9:16', '16:9', '1:1', '4:5', '21:9'] as AspectRatioPreset[]).map(
+              (preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => onChangeAspectRatio(preset)}
+                  className={`min-h-[38px] rounded-lg border text-xs font-medium transition ${
+                    aspectRatio === preset
+                      ? 'border-white bg-white text-[#09090B]'
+                      : 'border-zinc-800 bg-[#09090B] text-zinc-300 hover:border-zinc-600'
+                  }`}
+                >
+                  {preset === 'original' ? 'Original' : preset}
+                </button>
+              )
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="min-w-0">
+            <span className="mb-1.5 block text-xs text-zinc-300">Resolución</span>
+            <select
+              value={quality}
+              onChange={(e) => setQuality(e.target.value as 'original' | '1080p' | '720p')}
+              className="min-h-[40px] w-full rounded-lg border border-zinc-800 bg-[#09090B] px-2.5 text-xs text-white"
+            >
+              <option value="1080p">Full HD (1080p)</option>
+              <option value="720p">Rápido (720p)</option>
+              <option value="original">Nativa del clip</option>
+            </select>
+          </div>
+          <div className="min-w-0">
+            <span className="mb-1.5 block text-xs text-zinc-300">Encuadre</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={onToggleFitMode}
+                className="min-h-[40px] flex-1 rounded-lg border border-zinc-800 bg-[#09090B] px-2.5 text-xs font-medium text-zinc-200 hover:border-zinc-600 whitespace-nowrap"
+              >
+                {fitMode === 'contain' ? 'Ajustar' : 'Rellenar'}
+              </button>
+              <button
+                type="button"
+                onClick={onToggleBlurBorders}
+                title="Completar bordes vacíos con desenfoque"
+                aria-pressed={effects.blurBorders && fitMode === 'contain'}
+                className={`inline-flex min-h-[40px] items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium transition whitespace-nowrap shrink-0 ${
+                  effects.blurBorders && fitMode === 'contain'
+                    ? 'border-white bg-white text-[#09090B]'
+                    : 'border-zinc-800 bg-[#09090B] text-zinc-300 hover:border-zinc-600'
+                }`}
+              >
+                <Blend className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Blur</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {exportError && (
+          <p className="rounded-xl border border-[#FF453A]/40 bg-[#FF453A]/10 p-3 text-xs text-[#FF453A]">
+            {exportError}
+          </p>
+        )}
+
+        {isExporting ? (
+          <div className="space-y-3 rounded-xl border border-zinc-700 bg-[#09090B] p-4">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-white">{stageLabel}</span>
+              <span className="font-mono text-zinc-300 tabular-nums">{progress}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+              <div
+                style={{ width: `${progress}%` }}
+                className="h-full bg-[#FF453A] transition-all duration-150"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelExport}
+              className="inline-flex min-h-[38px] w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-700 text-xs font-medium text-zinc-300 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5" />
+              <span>Cancelar renderizado</span>
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleStartVideoExport}
+            className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#FAFAFA] px-5 text-sm font-semibold text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.98]"
+          >
+            <Download className="h-4 w-4" />
+            <span>Renderizar y exportar MP4</span>
+          </button>
+        )}
+
+        {exportedUrl && (
+          <div className="space-y-2.5 rounded-xl border border-zinc-700 bg-[#09090B] p-3">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="truncate font-medium text-white">{exportedUrl.fileName}</span>
+              <span className="font-mono text-zinc-400 tabular-nums shrink-0">
+                {formatBytes(exportedUrl.size)}
+              </span>
+            </div>
+            <video
+              src={exportedUrl.url}
+              controls
+              playsInline
+              className="max-h-48 w-full rounded-lg bg-black"
+            />
+            <a
+              href={exportedUrl.url}
+              download={exportedUrl.fileName}
+              className="flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-[#1C1C21] text-xs font-semibold text-white hover:border-zinc-500"
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span>Descargar MP4 de nuevo</span>
+            </a>
+          </div>
+        )}
+      </div>
+
+      {/* 2. Compact Secondary: Export SRT */}
+      <div className="space-y-2.5 border-t border-zinc-800/80 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <FileText className="h-3.5 w-3.5 text-zinc-400" />
+            <h3 className="text-xs font-semibold text-zinc-200">
+              Exportar subtítulos (.SRT)
+            </h3>
+          </div>
+          <span className="font-mono text-[11px] text-zinc-500 tabular-nums">
+            {cues.length} líneas
+          </span>
+        </div>
+
+        <label className="flex cursor-pointer items-center justify-between gap-2 text-[11px] text-zinc-400">
+          <span>Ajustar tiempos tras cortes de silencio</span>
+          <input
+            type="checkbox"
+            checked={applyCutsToSrt}
+            onChange={(e) => setApplyCutsToSrt(e.target.checked)}
+            className="h-3.5 w-3.5 accent-white"
+          />
+        </label>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={handleDownloadSrt}
+            disabled={!srtContent}
+            className="inline-flex min-h-[38px] flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-700 bg-[#1C1C21] px-3 text-xs font-medium text-white transition hover:border-zinc-500 disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span>Descargar .SRT</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleCopySrt}
+            disabled={!srtContent}
+            className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-[#09090B] px-3 text-xs font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white disabled:opacity-40"
+          >
+            {copiedSrt ? <Check className="h-3.5 w-3.5 text-white" /> : <Copy className="h-3.5 w-3.5" />}
+            <span>{copiedSrt ? 'Copiado' : 'Copiar'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
