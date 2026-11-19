@@ -1,4 +1,4 @@
-export type AspectRatioPreset = 'original' | '9:16' | '16:9' | '1:1' | '4:5' | '21:9';
+export type AspectRatioPreset = 'native' | '9:16' | '16:9' | '1:1' | '4:5' | '21:9';
 export type FitMode = 'contain' | 'cover';
 export type EditorTab = 'audio' | 'subtitles' | 'style' | 'effects' | 'export';
 

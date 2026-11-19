@@ -30,6 +30,109 @@ export function buildCssFilterString(effects: VideoEffectsConfig): string {
   return parts.length > 0 ? parts.join(' ') : 'none';
 }
 
+export const STANDARD_ASPECT_OPTIONS: Array<{
+  value: Exclude<AspectRatioPreset, 'native'>;
+  label: string;
+  ratio: number;
+}> = [
+  { value: '9:16', label: '9:16', ratio: 9 / 16 },
+  { value: '16:9', label: '16:9', ratio: 16 / 9 },
+  { value: '1:1', label: '1:1', ratio: 1 },
+  { value: '4:5', label: '4:5', ratio: 4 / 5 },
+  { value: '21:9', label: '21:9', ratio: 21 / 9 },
+];
+
+function formatCustomAspectRatio(width: number, height: number): string {
+  const actual = width / height;
+  const commonRatios: Array<[number, number]> = [
+    [4, 3],
+    [3, 4],
+    [3, 2],
+    [2, 3],
+    [16, 10],
+    [10, 16],
+    [5, 4],
+    [4, 5],
+    [5, 3],
+    [3, 5],
+    [18, 9],
+    [9, 18],
+    [19, 9],
+    [9, 19],
+    [20, 9],
+    [9, 20],
+    [9, 21],
+  ];
+
+  for (const [a, b] of commonRatios) {
+    if (Math.abs(Math.log(actual / (a / b))) <= 0.028) {
+      return `${a}:${b}`;
+    }
+  }
+
+  let bestA = 16;
+  let bestB = 9;
+  let bestErr = Infinity;
+  for (let b = 1; b <= 20; b++) {
+    const a = Math.max(1, Math.round(actual * b));
+    if (a > 25) continue;
+    const err = Math.abs(actual - a / b);
+    if (err < bestErr) {
+      bestErr = err;
+      bestA = a;
+      bestB = b;
+    }
+  }
+
+  const gcd = (x: number, y: number): number => (y === 0 ? x : gcd(y, x % y));
+  const d = gcd(bestA, bestB);
+  return `${bestA / d}:${bestB / d}`;
+}
+
+export function detectVideoAspectRatio(
+  width: number,
+  height: number
+): { preset: AspectRatioPreset; nativeLabel: string | null; displayLabel: string } {
+  if (!width || !height || width <= 0 || height <= 0) {
+    return { preset: '16:9', nativeLabel: null, displayLabel: '16:9' };
+  }
+
+  const actual = width / height;
+  let closest = STANDARD_ASPECT_OPTIONS[1];
+  let minDiff = Infinity;
+
+  for (const opt of STANDARD_ASPECT_OPTIONS) {
+    const diff = Math.abs(Math.log(actual / opt.ratio));
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = opt;
+    }
+  }
+
+  if (minDiff <= 0.05) {
+    return { preset: closest.value, nativeLabel: null, displayLabel: closest.label };
+  }
+
+  const customLabel = formatCustomAspectRatio(width, height);
+  return {
+    preset: 'native',
+    nativeLabel: customLabel,
+    displayLabel: customLabel,
+  };
+}
+
+export function getAspectOptions(
+  nativeLabel: string | null
+): Array<{ value: AspectRatioPreset; label: string }> {
+  const base: Array<{ value: AspectRatioPreset; label: string }> = STANDARD_ASPECT_OPTIONS.map(
+    ({ value, label }) => ({ value, label })
+  );
+  if (nativeLabel) {
+    return [{ value: 'native', label: nativeLabel }, ...base];
+  }
+  return base;
+}
+
 export function resolveCanvasDimensions(
   preset: AspectRatioPreset,
   sourceWidth: number,
@@ -56,13 +159,13 @@ export function resolveCanvasDimensions(
     case '21:9':
       ratio = 21 / 9;
       break;
-    case 'original':
+    case 'native':
     default:
       ratio = safeW / safeH;
       break;
   }
 
-  if (quality === 'original' && preset === 'original') {
+  if (quality === 'original' && preset === 'native') {
     return {
       width: Math.round(safeW / 2) * 2,
       height: Math.round(safeH / 2) * 2,

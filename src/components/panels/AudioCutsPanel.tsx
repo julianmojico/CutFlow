@@ -1,6 +1,8 @@
 import React from 'react';
 import { ArrowRight, Check, Play, RefreshCw, Scissors, Trash2 } from '../Icons';
 import type { AudioAnalysisConfig, CutSegment } from '../../types/editor';
+import { useI18n } from '../../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../../utils/analytics';
 import { formatTimecode } from '../../utils/audioEngine';
 
 interface AudioCutsPanelProps {
@@ -28,6 +30,7 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
   onSeek,
   onNextStep,
 }) => {
+  const { t } = useI18n();
   const activeCount = cuts.filter((c) => c.enabled).length;
   const savedSeconds = cuts
     .filter((c) => c.enabled)
@@ -39,21 +42,29 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="font-display text-base font-semibold text-white">
-            Silencios y pausas
+            {t.audioPanel.title}
           </h2>
           <p className="mt-0.5 text-xs text-zinc-400">
-            {activeCount} cortes activos · {savedSeconds.toFixed(1)}s removidos del montaje
+            {t.audioPanel.summary(activeCount, savedSeconds.toFixed(1))}
           </p>
         </div>
 
         <button
           type="button"
-          onClick={onReanalyze}
+          onClick={() => {
+            trackEvent('audio_analyze_click', {
+              silence_threshold_db: config.silenceThresholdDb,
+              min_silence_ms: config.minSilenceMs,
+              detect_hesitations: config.detectHesitations,
+            });
+            onReanalyze();
+          }}
           disabled={isAnalyzing}
+          {...gtmProps('audio_reanalyze', 'audio_cuts', t.audioPanel.analyze)}
           className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-[#FAFAFA] px-3 py-1.5 text-xs font-semibold text-[#09090B] transition hover:bg-zinc-200 disabled:opacity-50 whitespace-nowrap shrink-0"
         >
           <RefreshCw className={`h-3.5 w-3.5 ${isAnalyzing ? 'animate-spin' : ''}`} />
-          <span>{isAnalyzing ? 'Analizando...' : 'Analizar'}</span>
+          <span>{isAnalyzing ? t.audioPanel.analyzing : t.audioPanel.analyze}</span>
         </button>
       </div>
 
@@ -62,7 +73,7 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
         <div>
           <div className="mb-1.5 flex items-center justify-between text-xs">
             <label htmlFor="silence-db" className="font-medium text-zinc-200">
-              Umbral de silencio
+              {t.audioPanel.silenceThreshold}
             </label>
             <span className="font-mono text-zinc-400 tabular-nums">
               {config.silenceThresholdDb} dB
@@ -78,6 +89,19 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
             onChange={(e) =>
               onChangeConfig({ ...config, silenceThresholdDb: Number(e.target.value) })
             }
+            onPointerUp={() =>
+              trackEvent('audio_config_change', {
+                field: 'silence_threshold_db',
+                value: config.silenceThresholdDb,
+              })
+            }
+            onKeyUp={() =>
+              trackEvent('audio_config_change', {
+                field: 'silence_threshold_db',
+                value: config.silenceThresholdDb,
+              })
+            }
+            {...gtmProps('audio_silence_threshold', 'audio_cuts', 'silence_threshold')}
             className="studio-slider w-full"
           />
         </div>
@@ -85,7 +109,7 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
         <div>
           <div className="mb-1.5 flex items-center justify-between text-xs">
             <label htmlFor="min-silence-ms" className="font-medium text-zinc-200">
-              Duración mínima de pausa
+              {t.audioPanel.minPauseDuration}
             </label>
             <span className="font-mono text-zinc-400 tabular-nums">
               {(config.minSilenceMs / 1000).toFixed(2)} s
@@ -101,6 +125,19 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
             onChange={(e) =>
               onChangeConfig({ ...config, minSilenceMs: Number(e.target.value) })
             }
+            onPointerUp={() =>
+              trackEvent('audio_config_change', {
+                field: 'min_silence_ms',
+                value: config.minSilenceMs,
+              })
+            }
+            onKeyUp={() =>
+              trackEvent('audio_config_change', {
+                field: 'min_silence_ms',
+                value: config.minSilenceMs,
+              })
+            }
+            {...gtmProps('audio_min_silence_ms', 'audio_cuts', 'min_silence_ms')}
             className="studio-slider w-full"
           />
         </div>
@@ -109,19 +146,25 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
         <div className="flex items-center justify-between gap-3 pt-1">
           <div>
             <p className="text-xs font-medium text-zinc-200">
-              Detectar vacilaciones acústicas («emm / err»)
+              {t.audioPanel.detectHesitationsTitle}
             </p>
             <p className="text-[11px] text-zinc-400">
-              Marca ráfagas cortas aisladas con tono estable entre pausas
+              {t.audioPanel.detectHesitationsDesc}
             </p>
           </div>
           <button
             type="button"
             role="switch"
             aria-checked={config.detectHesitations}
-            onClick={() =>
-              onChangeConfig({ ...config, detectHesitations: !config.detectHesitations })
-            }
+            onClick={() => {
+              const nextVal = !config.detectHesitations;
+              trackEvent('audio_config_change', {
+                field: 'detect_hesitations',
+                value: nextVal,
+              });
+              onChangeConfig({ ...config, detectHesitations: nextVal });
+            }}
+            {...gtmProps('audio_detect_hesitations', 'audio_cuts', 'detect_hesitations')}
             className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${
               config.detectHesitations
                 ? 'border-white bg-white'
@@ -142,7 +185,7 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
           <div>
             <div className="mb-1.5 flex items-center justify-between text-xs">
               <label htmlFor="hesitation-sens" className="font-medium text-zinc-300">
-                Sensibilidad a vacilaciones
+                {t.audioPanel.hesitationSensitivity}
               </label>
               <span className="font-mono text-zinc-400 tabular-nums">
                 {config.hesitationSensitivity}%
@@ -161,6 +204,19 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
                   hesitationSensitivity: Number(e.target.value),
                 })
               }
+              onPointerUp={() =>
+                trackEvent('audio_config_change', {
+                  field: 'hesitation_sensitivity',
+                  value: config.hesitationSensitivity,
+                })
+              }
+              onKeyUp={() =>
+                trackEvent('audio_config_change', {
+                  field: 'hesitation_sensitivity',
+                  value: config.hesitationSensitivity,
+                })
+              }
+              {...gtmProps('audio_hesitation_sensitivity', 'audio_cuts', 'hesitation_sensitivity')}
               className="studio-slider w-full"
             />
           </div>
@@ -171,24 +227,32 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
       <div className="space-y-2.5 border-t border-zinc-800/80 pt-4">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-zinc-200">
-            Segmentos detectados ({cuts.length})
+            {t.audioPanel.detectedSegments(cuts.length)}
           </span>
           {cuts.length > 0 && (
             <div className="flex items-center gap-2 text-xs">
               <button
                 type="button"
-                onClick={() => onEnableAllCuts(true)}
+                onClick={() => {
+                  trackEvent('cuts_bulk_toggle', { enabled: true, count: cuts.length });
+                  onEnableAllCuts(true);
+                }}
+                {...gtmProps('audio_enable_all_cuts', 'audio_cuts', 'cut_all')}
                 className="text-zinc-300 underline-offset-2 hover:text-white hover:underline"
               >
-                Cortar todos
+                {t.audioPanel.cutAll}
               </button>
               <span className="text-zinc-600">·</span>
               <button
                 type="button"
-                onClick={() => onEnableAllCuts(false)}
+                onClick={() => {
+                  trackEvent('cuts_bulk_toggle', { enabled: false, count: cuts.length });
+                  onEnableAllCuts(false);
+                }}
+                {...gtmProps('audio_disable_all_cuts', 'audio_cuts', 'keep_all')}
                 className="text-zinc-400 underline-offset-2 hover:text-white hover:underline"
               >
-                Conservar todos
+                {t.audioPanel.keepAll}
               </button>
             </div>
           )}
@@ -196,7 +260,7 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
 
         {cuts.length === 0 ? (
           <p className="rounded-xl border border-zinc-800/80 bg-[#09090B] p-4 text-center text-xs text-zinc-400">
-            No se detectaron silencios con el umbral actual. Prueba subir el umbral en dB o reducir la duración mínima.
+            {t.audioPanel.emptyState}
           </p>
         ) : (
           <div className="max-h-60 space-y-1.5 overflow-y-auto pr-1">
@@ -211,7 +275,11 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
               >
                 <button
                   type="button"
-                  onClick={() => onSeek(Math.max(0, cut.startTime - 0.35))}
+                  onClick={() => {
+                    trackEvent('cut_seek', { kind: cut.kind });
+                    onSeek(Math.max(0, cut.startTime - 0.35));
+                  }}
+                  {...gtmProps('audio_cut_seek', 'audio_cuts', cut.kind)}
                   className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                 >
                   <Play className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
@@ -226,8 +294,16 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
-                    onClick={() => onToggleCut(cut.id)}
-                    title={cut.enabled ? 'Conservar segmento' : 'Cortar segmento'}
+                    onClick={() => {
+                      trackEvent('cut_toggle', {
+                        kind: cut.kind,
+                        enabled: !cut.enabled,
+                        source: 'panel',
+                      });
+                      onToggleCut(cut.id);
+                    }}
+                    {...gtmProps('audio_cut_toggle', 'audio_cuts', cut.kind)}
+                    title={cut.enabled ? t.audioPanel.keepSegmentTitle : t.audioPanel.cutSegmentTitle}
                     className={`flex h-9 w-9 items-center justify-center rounded-lg border transition ${
                       cut.enabled
                         ? 'border-[#FF453A]/60 bg-[#FF453A]/20 text-white'
@@ -242,8 +318,12 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => onDeleteCut(cut.id)}
-                    title="Eliminar marcador"
+                    onClick={() => {
+                      trackEvent('cut_delete', { kind: cut.kind });
+                      onDeleteCut(cut.id);
+                    }}
+                    {...gtmProps('audio_cut_delete', 'audio_cuts', cut.kind)}
+                    title={t.audioPanel.deleteMarkerTitle}
                     className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-800 hover:text-white"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -259,10 +339,14 @@ export const AudioCutsPanel: React.FC<AudioCutsPanelProps> = ({
       <div className="border-t border-zinc-800/80 pt-4">
         <button
           type="button"
-          onClick={onNextStep}
+          onClick={() => {
+            trackEvent('next_step_click', { from: 'audio', to: 'subtitles' });
+            onNextStep();
+          }}
+          {...gtmProps('audio_next_subtitles', 'navigation', t.audioPanel.nextStep)}
           className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-[#1C1C21] px-4 text-xs font-semibold text-white transition hover:border-zinc-500 hover:bg-zinc-800"
         >
-          <span>Editar texto</span>
+          <span>{t.audioPanel.nextStep}</span>
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>

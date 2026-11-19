@@ -18,8 +18,14 @@ import type {
   VideoAsset,
   VideoEffectsConfig,
 } from '../types/editor';
+import { useI18n } from '../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../utils/analytics';
 import { formatTimecode } from '../utils/audioEngine';
-import { buildCssFilterString, computeAnimationFrame } from '../utils/subtitleRenderer';
+import {
+  buildCssFilterString,
+  computeAnimationFrame,
+  getAspectOptions,
+} from '../utils/subtitleRenderer';
 
 interface VideoPreviewStageProps {
   asset: VideoAsset;
@@ -39,20 +45,12 @@ interface VideoPreviewStageProps {
   onUpdateSubtitlePosition: (xPercent: number, yPercent: number) => void;
   effects: VideoEffectsConfig;
   aspectRatio: AspectRatioPreset;
+  nativeAspectLabel: string | null;
   onChangeAspectRatio: (preset: AspectRatioPreset) => void;
   fitMode: FitMode;
   onToggleFitMode: () => void;
   onToggleBlurBorders: () => void;
 }
-
-const ASPECT_OPTIONS: Array<{ value: AspectRatioPreset; label: string }> = [
-  { value: 'original', label: 'Original' },
-  { value: '9:16', label: '9:16' },
-  { value: '16:9', label: '16:9' },
-  { value: '1:1', label: '1:1' },
-  { value: '4:5', label: '4:5' },
-  { value: '21:9', label: '21:9' },
-];
 
 export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
   asset,
@@ -72,11 +70,13 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
   onUpdateSubtitlePosition,
   effects,
   aspectRatio,
+  nativeAspectLabel,
   onChangeAspectRatio,
   fitMode,
   onToggleFitMode,
   onToggleBlurBorders,
 }) => {
+  const { t } = useI18n();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -114,6 +114,8 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
     return () => cancelAnimationFrame(rafId);
   }, [animPreviewTrigger, isPlaying]);
 
+  const aspectOptions = useMemo(() => getAspectOptions(nativeAspectLabel), [nativeAspectLabel]);
+
   const targetRatio = useMemo(() => {
     switch (aspectRatio) {
       case '9:16':
@@ -126,7 +128,7 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
         return 4 / 5;
       case '21:9':
         return 21 / 9;
-      case 'original':
+      case 'native':
       default: {
         const w = asset.width || 16;
         const h = asset.height || 9;
@@ -209,7 +211,7 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
     };
 
     const onError = () => {
-      setVideoDecodeError('El navegador no pudo decodificar la imagen de este video.');
+      setVideoDecodeError(t.errors.previewDecodeFailed);
     };
 
     if (video.readyState >= 2) {
@@ -221,7 +223,7 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
       video.removeEventListener('loadeddata', paintFirstFrame);
       video.removeEventListener('error', onError);
     };
-  }, [asset.url, videoRef]);
+  }, [asset.url, t.errors.previewDecodeFailed, videoRef]);
 
   const showBlurredBorders = !compareOriginal && effects.blurBorders && fitMode === 'contain';
 
@@ -316,6 +318,10 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
         // ignore
       }
       setIsDraggingSub(false);
+      trackEvent('subtitle_position_drag', {
+        x_percent: Math.round(subtitleStyle.xPercent),
+        y_percent: Math.round(subtitleStyle.yPercent),
+      });
     }
   };
 
@@ -328,7 +334,7 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
             id: 'preview-sample',
             startTime: 0,
             endTime: 1.45,
-            text: 'Vista previa de subtítulo animado',
+            text: t.preview.sampleSubtitle,
           }
         : null);
 
@@ -352,18 +358,26 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
       transform,
       activeWordIdx: anim.activeWordIdx,
     };
-  }, [activeCue, currentTime, firstCue, isPlaying, previewProgressSec, subtitleStyle]);
+  }, [activeCue, currentTime, firstCue, isPlaying, previewProgressSec, subtitleStyle, t.preview.sampleSubtitle]);
 
   return (
     <section className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-[#131316]">
       {/* Top format & preview controls strip */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 px-3 py-2 sm:px-4">
         <div className="flex max-w-full min-w-0 flex-wrap items-center gap-1">
-          {ASPECT_OPTIONS.map((opt) => (
+          {aspectOptions.map((opt) => (
             <button
               key={opt.value}
               type="button"
-              onClick={() => onChangeAspectRatio(opt.value)}
+              onClick={() => {
+                trackEvent('aspect_ratio_change', {
+                  aspect_ratio: opt.value,
+                  label: opt.label,
+                  location: 'preview',
+                });
+                onChangeAspectRatio(opt.value);
+              }}
+              {...gtmProps(`preview_aspect_${opt.value}`, 'preview', opt.label)}
               className={`min-h-[34px] rounded-md px-2.5 py-1 text-xs font-medium transition whitespace-nowrap shrink-0 ${
                 aspectRatio === opt.value
                   ? 'bg-white text-zinc-950'
@@ -378,8 +392,15 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            onClick={onToggleFitMode}
-            title={fitMode === 'contain' ? 'Cambiar a Rellenar' : 'Cambiar a Ajustar'}
+            onClick={() => {
+              trackEvent('fit_mode_toggle', {
+                next_fit_mode: fitMode === 'contain' ? 'cover' : 'contain',
+                location: 'preview',
+              });
+              onToggleFitMode();
+            }}
+            {...gtmProps('preview_fit_mode', 'preview', fitMode === 'contain' ? 'fit' : 'fill')}
+            title={fitMode === 'contain' ? t.preview.switchToFill : t.preview.switchToFit}
             className="inline-flex min-h-[34px] items-center gap-1.5 rounded-md border border-zinc-800 bg-[#1C1C21] px-2.5 py-1 text-xs font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white whitespace-nowrap shrink-0"
           >
             {fitMode === 'contain' ? (
@@ -387,14 +408,21 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
             ) : (
               <Minimize2 className="h-3.5 w-3.5" aria-hidden="true" />
             )}
-            <span>{fitMode === 'contain' ? 'Ajustar' : 'Rellenar'}</span>
+            <span>{fitMode === 'contain' ? t.preview.fit : t.preview.fill}</span>
           </button>
 
           <button
             type="button"
-            onClick={onToggleBlurBorders}
+            onClick={() => {
+              trackEvent('blur_borders_toggle', {
+                enabled: !(effects.blurBorders && fitMode === 'contain'),
+                location: 'preview',
+              });
+              onToggleBlurBorders();
+            }}
+            {...gtmProps('preview_blur_borders', 'preview', t.preview.blurBorders)}
             aria-pressed={effects.blurBorders && fitMode === 'contain'}
-            title="Completar los bordes vacíos con desenfoque"
+            title={t.preview.blurBordersTitle}
             className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition whitespace-nowrap shrink-0 ${
               effects.blurBorders && fitMode === 'contain'
                 ? 'border-white bg-white text-zinc-950'
@@ -402,12 +430,21 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
             }`}
           >
             <Blend className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Bordes blur</span>
+            <span>{t.preview.blurBorders}</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setCompareOriginal((prev) => !prev)}
+            onClick={() =>
+              setCompareOriginal((prev) => {
+                const next = !prev;
+                trackEvent('preview_compare_toggle', { showing_unfiltered: next });
+                return next;
+              })
+            }
+            {...gtmProps('preview_compare_unfiltered', 'preview', t.preview.noEffects)}
+            aria-pressed={compareOriginal}
+            title={t.preview.compareNoEffectsTitle}
             className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition whitespace-nowrap shrink-0 ${
               compareOriginal
                 ? 'border-white bg-white text-zinc-950'
@@ -415,7 +452,7 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
             }`}
           >
             <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Original</span>
+            <span>{t.preview.noEffects}</span>
           </button>
         </div>
       </div>
@@ -428,7 +465,14 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
         >
           <div
             ref={stageRef}
-            onClick={onTogglePlay}
+            onClick={() => {
+              trackEvent('playback_toggle', {
+                action: isPlaying ? 'pause' : 'play',
+                source: 'stage',
+              });
+              onTogglePlay();
+            }}
+            {...gtmProps('preview_stage_play_toggle', 'playback', isPlaying ? 'pause' : 'play')}
             style={stageSizeStyle}
             className="relative cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-black shadow-2xl"
           >
@@ -490,7 +534,8 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
               onPointerMove={handleSubPointerMove}
               onPointerUp={handleSubPointerUp}
               onClick={(e) => e.stopPropagation()}
-              title="Arrastra para mover la ubicación del subtítulo"
+              {...gtmProps('preview_subtitle_drag', 'subtitle_style', 'drag_subtitle')}
+              title={t.preview.dragSubtitleTitle}
               style={{
                 left: `${subtitleStyle.xPercent}%`,
                 top: `${subtitleStyle.yPercent}%`,
@@ -555,27 +600,42 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
         <div className="flex items-center gap-1.5">
           <button
             type="button"
-            onClick={() => onSeek(Math.max(0, currentTime - 2))}
+            onClick={() => {
+              trackEvent('playback_skip', { delta_sec: -2 });
+              onSeek(Math.max(0, currentTime - 2));
+            }}
+            {...gtmProps('transport_rewind_2s', 'playback', 'rewind_2s')}
             className="flex h-11 w-11 items-center justify-center rounded-lg text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
-            aria-label="Retroceder 2 segundos"
+            aria-label={t.preview.rewind2s}
           >
             <RotateCcw className="h-4 w-4" />
           </button>
 
           <button
             type="button"
-            onClick={onTogglePlay}
+            onClick={() => {
+              trackEvent('playback_toggle', {
+                action: isPlaying ? 'pause' : 'play',
+                source: 'transport',
+              });
+              onTogglePlay();
+            }}
+            {...gtmProps('transport_play_pause', 'playback', isPlaying ? 'pause' : 'play')}
             className="flex h-11 min-w-[44px] items-center justify-center rounded-xl bg-[#FAFAFA] px-3.5 text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.97]"
-            aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+            aria-label={isPlaying ? t.preview.pause : t.preview.play}
           >
             {isPlaying ? <Pause className="h-4 w-4 fill-current" /> : <Play className="h-4 w-4 fill-current" />}
           </button>
 
           <button
             type="button"
-            onClick={() => onSeek(Math.min(asset.duration, currentTime + 2))}
+            onClick={() => {
+              trackEvent('playback_skip', { delta_sec: 2 });
+              onSeek(Math.min(asset.duration, currentTime + 2));
+            }}
+            {...gtmProps('transport_forward_2s', 'playback', 'forward_2s')}
             className="flex h-11 w-11 items-center justify-center rounded-lg text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
-            aria-label="Avanzar 2 segundos"
+            aria-label={t.preview.forward2s}
           >
             <RotateCw className="h-4 w-4" />
           </button>
@@ -593,7 +653,11 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
 
         <button
           type="button"
-          onClick={onToggleSkipCuts}
+          onClick={() => {
+            trackEvent('skip_cuts_toggle', { skip_cuts: !skipCuts });
+            onToggleSkipCuts();
+          }}
+          {...gtmProps('transport_skip_cuts_toggle', 'playback', skipCuts ? 'skip_cuts' : 'uncut')}
           className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition whitespace-nowrap shrink-0 ${
             skipCuts
               ? 'border-[#FF453A]/60 bg-[#FF453A]/15 text-white'
@@ -601,7 +665,7 @@ export const VideoPreviewStage: React.FC<VideoPreviewStageProps> = ({
           }`}
         >
           <Scissors className="h-3.5 w-3.5 text-[#FF453A]" aria-hidden="true" />
-          <span>{skipCuts ? 'Saltando cortes' : 'Video sin cortes'}</span>
+          <span>{skipCuts ? t.preview.skippingCuts : t.preview.uncutVideo}</span>
         </button>
       </div>
     </section>

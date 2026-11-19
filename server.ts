@@ -317,13 +317,28 @@ app.post('/api/transcribe', async (req, res) => {
       return;
     }
 
-    const { audioBase64, mimeType, duration, speechRegions, languageHint } = req.body as {
+    const { audioBase64, mimeType, duration, speechRegions, languageHint, uiLanguage } = req.body as {
       audioBase64?: string;
       mimeType?: string;
       duration?: number;
       speechRegions?: SpeechRegionInput[];
       languageHint?: string;
+      uiLanguage?: 'es' | 'pt' | 'en';
     };
+
+    const langMode = uiLanguage === 'pt' || uiLanguage === 'en' ? uiLanguage : 'es';
+    const langInstruction =
+      langMode === 'pt'
+        ? '1. Return detectedLanguage as the clear Portuguese name of the primary spoken language (for example: "Português", "Espanhol", "Inglês", "Francês", "Italiano", "Alemão").'
+        : langMode === 'en'
+          ? '1. Return detectedLanguage as the clear English name of the primary spoken language (for example: "English", "Spanish", "Portuguese", "French", "Italian", "German").'
+          : '1. Return detectedLanguage as the clear Spanish name of the primary spoken language (for example: "Español", "Inglés", "Portugués", "Francés", "Italiano", "Alemán").';
+    const noSpeechLabel =
+      langMode === 'pt'
+        ? 'Nenhuma voz detectada'
+        : langMode === 'en'
+          ? 'No speech detected'
+          : 'Sin voz detectada';
 
     if (!audioBase64 || !mimeType) {
       res.status(400).json({ error: 'Se requiere audio codificado para transcribir.' });
@@ -384,10 +399,10 @@ app.post('/api/transcribe', async (req, res) => {
       `Total audio duration: ${Number(duration || 0).toFixed(2)} seconds.`,
       regionsHint,
       'Rules:',
-      '1. Return detectedLanguage as the clear Spanish name of the primary spoken language (for example: "Español", "Inglés", "Portugués", "Francés", "Italiano", "Alemán").',
+      langInstruction,
       '2. Split speech into natural, concise subtitle cues (max 8-10 words per cue) with accurate startTime and endTime in seconds.',
       '3. Keep the spoken words in their original language (do not translate).',
-      '4. If there is no speech in the audio, return an empty cues array and detectedLanguage "Sin voz detectada".',
+      `4. If there is no speech in the audio, return an empty cues array and detectedLanguage "${noSpeechLabel}".`,
     ]
       .filter(Boolean)
       .join('\n');
@@ -974,6 +989,35 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
+    const DEFAULT_SEO_ORIGIN = 'https://ais-pre-zuxzpvcfgyk7jiro6b2noa-253198896547.us-east1.run.app';
+    const DEFAULT_GA_ID = 'G-7F5B63975M';
+    const rawGaEnv = (process.env.VITE_GA_MEASUREMENT_ID || process.env.GA_MEASUREMENT_ID || '').trim();
+    const runtimeGaId =
+      rawGaEnv && rawGaEnv !== 'G-XXXXXXXXXX' && /^G-[A-Z0-9]+$/i.test(rawGaEnv)
+        ? rawGaEnv
+        : DEFAULT_GA_ID;
+    const rawIndexHtml = (await fs.readFile(path.join(distDir, 'index.html'), 'utf-8')).replaceAll(
+      DEFAULT_GA_ID,
+      runtimeGaId
+    );
+
+    const resolveRequestOrigin = (req: express.Request): string => {
+      if (process.env.APP_URL) {
+        return process.env.APP_URL.replace(/\/+$/, '');
+      }
+      const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() || req.protocol || 'https';
+      const host = (req.headers['x-forwarded-host'] as string | undefined)?.split(',')[0]?.trim() || req.get('host');
+      return host ? `${proto}://${host}` : DEFAULT_SEO_ORIGIN;
+    };
+
+    app.get('/', (req, res) => {
+      const origin = resolveRequestOrigin(req);
+      const html = rawIndexHtml.replaceAll(DEFAULT_SEO_ORIGIN, origin);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.send(html);
+    });
+
     app.use(
       express.static(distDir, {
         maxAge: '1h',
@@ -986,9 +1030,12 @@ async function startServer() {
         },
       })
     );
-    app.get('/{*splat}', (_req, res) => {
+    app.get('/{*splat}', (req, res) => {
+      const origin = resolveRequestOrigin(req);
+      const html = rawIndexHtml.replaceAll(DEFAULT_SEO_ORIGIN, origin);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.sendFile(path.join(distDir, 'index.html'));
+      res.send(html);
     });
   }
 

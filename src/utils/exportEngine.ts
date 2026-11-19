@@ -7,6 +7,7 @@ import type {
   VideoAsset,
   VideoEffectsConfig,
 } from '../types/editor';
+import { TRANSLATIONS, type UILanguage } from '../i18n/translations';
 import { getEditedDuration, getKeptTimeRanges } from './audioEngine';
 import {
   buildCssFilterString,
@@ -23,6 +24,7 @@ export interface ExportOptions {
   aspectRatio: AspectRatioPreset;
   fitMode: FitMode;
   quality: 'original' | '1080p' | '720p';
+  lang?: UILanguage;
   onProgress: (percent: number, stageLabel: string) => void;
   signal: AbortSignal;
 }
@@ -62,15 +64,16 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
     aspectRatio,
     fitMode,
     quality,
+    lang = 'es',
     onProgress,
     signal,
   } = options;
 
+  const t = TRANSLATIONS[lang].exportEngine;
+
   const keptRanges = getKeptTimeRanges(asset.duration, cuts);
   if (keptRanges.length === 0) {
-    throw new Error(
-      'Todos los segmentos del video están cortados. Activa al menos un segmento para exportar.'
-    );
+    throw new Error(t.allSegmentsCut);
   }
 
   const targetDuration = getEditedDuration(asset.duration, cuts);
@@ -92,7 +95,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) {
     canvas.remove();
-    throw new Error('No se pudo inicializar el lienzo 2D de exportación.');
+    throw new Error(t.canvasInitFailed);
   }
 
   const video = document.createElement('video');
@@ -128,7 +131,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
         };
         const onErr = () => {
           cleanup();
-          reject(new Error('No se pudo cargar el archivo de video para renderizar.'));
+          reject(new Error(t.videoLoadFailed));
         };
         const cleanup = () => {
           video.removeEventListener('loadeddata', onLoaded);
@@ -160,7 +163,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
     };
     const captureFn = canvasWithCapture.captureStream || canvasWithCapture.mozCaptureStream;
     if (!captureFn) {
-      throw new Error('Tu navegador no soporta captura de lienzo para exportar video.');
+      throw new Error(t.captureUnsupported);
     }
     const canvasStream = captureFn.call(canvas, 30);
     combinedStream = new MediaStream([
@@ -169,7 +172,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
     ]);
 
     if (typeof MediaRecorder === 'undefined') {
-      throw new Error('Tu navegador no soporta grabación de exportación (MediaRecorder).');
+      throw new Error(t.recorderUnsupported);
     }
 
     const supportedMime = pickSupportedMimeType();
@@ -320,11 +323,11 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
 
     let completedDuration = 0;
 
-    onProgress(1, 'Iniciando renderizado...');
+    onProgress(1, t.startingRender);
 
     for (let i = 0; i < keptRanges.length; i++) {
       if (signal.aborted) {
-        throw new Error('Exportación cancelada por el usuario.');
+        throw new Error(t.cancelledByUser);
       }
 
       const range = keptRanges[i];
@@ -382,7 +385,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
           if (signal.aborted) {
             cancelAnimationFrame(rafId);
             video.pause();
-            reject(new Error('Exportación cancelada por el usuario.'));
+            reject(new Error(t.cancelledByUser));
             return;
           }
 
@@ -393,7 +396,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
             90,
             Math.round(((completedDuration + currentInRange) / Math.max(0.1, targetDuration)) * 90)
           );
-          onProgress(pct, `Renderizando segmento ${i + 1} de ${keptRanges.length}...`);
+          onProgress(pct, t.renderingSegment(i + 1, keptRanges.length));
 
           if (video.currentTime >= range.endTime - 0.03 || video.ended) {
             cancelAnimationFrame(rafId);
@@ -412,7 +415,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
       });
     }
 
-    onProgress(91, 'Finalizando captura de video...');
+    onProgress(91, t.finalizingCapture);
     if (recorder.state !== 'inactive') {
       await new Promise<void>((resolve) => {
         recorder.onstop = () => resolve();
@@ -422,16 +425,14 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
 
     const rawBlob = new Blob(chunks, { type: mimeType });
     if (rawBlob.size === 0) {
-      throw new Error('No se capturaron fotogramas durante la exportación.');
+      throw new Error(t.noFramesCaptured);
     }
     if (rawBlob.size > 500 * 1024 * 1024) {
-      throw new Error(
-        'La captura renderizada supera el límite de 500 MB. Selecciona calidad 720p o recorta el clip.'
-      );
+      throw new Error(t.captureTooLarge);
     }
 
     // Chunked upload (6 MB slices) to bypass Cloud Run's 32 MB single-request proxy limit up to 500 MB
-    onProgress(92, 'Preparando conversión a MP4...');
+    onProgress(92, t.preparingMp4);
     const initResp = await fetch('/api/convert-mp4/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -443,14 +444,14 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
     });
 
     if (!initResp.ok) {
-      let detail = `Error HTTP ${initResp.status}`;
+      let detail = `HTTP ${initResp.status}`;
       try {
         const errJson = (await initResp.json()) as { error?: string };
         if (errJson?.error) detail = errJson.error;
       } catch {
         // ignore JSON parse errors
       }
-      throw new Error(`No se pudo convertir el video a MP4 (${detail}).`);
+      throw new Error(t.mp4ConvertFailed(detail));
     }
 
     const { uploadId } = (await initResp.json()) as { uploadId: string };
@@ -461,7 +462,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
 
     for (let idx = 0; idx < totalChunks; idx++) {
       if (signal.aborted) {
-        throw new Error('Exportación cancelada por el usuario.');
+        throw new Error(t.cancelledByUser);
       }
       const start = idx * CHUNK_BYTES;
       const end = Math.min(rawBlob.size, start + CHUNK_BYTES);
@@ -469,9 +470,7 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
       const uploadPct = 92 + Math.round(((idx + 1) / totalChunks) * 5);
       onProgress(
         uploadPct,
-        totalChunks > 1
-          ? `Subiendo video (${idx + 1}/${totalChunks})...`
-          : 'Subiendo video para MP4...'
+        totalChunks > 1 ? t.uploadingChunk(idx + 1, totalChunks) : t.uploadingSingle
       );
 
       const chunkResp = await fetch(`/api/convert-mp4/chunk/${uploadId}`, {
@@ -482,18 +481,18 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
       });
 
       if (!chunkResp.ok) {
-        let detail = `Error HTTP ${chunkResp.status}`;
+        let detail = `HTTP ${chunkResp.status}`;
         try {
           const errJson = (await chunkResp.json()) as { error?: string };
           if (errJson?.error) detail = errJson.error;
         } catch {
           // ignore JSON parse errors
         }
-        throw new Error(`No se pudo convertir el video a MP4 (${detail}).`);
+        throw new Error(t.mp4ConvertFailed(detail));
       }
     }
 
-    onProgress(98, 'Codificando MP4 universal (H.264)...');
+    onProgress(98, t.encodingMp4);
     const finalizeResp = await fetch(`/api/convert-mp4/finalize/${uploadId}`, {
       method: 'POST',
       signal,
@@ -501,22 +500,22 @@ export async function exportEditedVideo(options: ExportOptions): Promise<ExportR
     activeUploadId = null;
 
     if (!finalizeResp.ok) {
-      let detail = `Error HTTP ${finalizeResp.status}`;
+      let detail = `HTTP ${finalizeResp.status}`;
       try {
         const errJson = (await finalizeResp.json()) as { error?: string };
         if (errJson?.error) detail = errJson.error;
       } catch {
         // ignore JSON parse errors
       }
-      throw new Error(`No se pudo convertir el video a MP4 (${detail}).`);
+      throw new Error(t.mp4ConvertFailed(detail));
     }
 
     const mp4Blob = await finalizeResp.blob();
     if (mp4Blob.size === 0) {
-      throw new Error('El servidor devolvió un archivo MP4 vacío.');
+      throw new Error(t.emptyMp4Server);
     }
 
-    onProgress(100, 'MP4 listo para descargar');
+    onProgress(100, t.mp4Ready);
     return {
       blob: mp4Blob,
       extension: 'mp4',

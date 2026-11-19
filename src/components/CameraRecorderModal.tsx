@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, Square, SwitchCamera, Video, X } from './Icons';
+import { useI18n } from '../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../utils/analytics';
 import { formatTimecode } from '../utils/audioEngine';
 
 interface CameraRecorderModalProps {
@@ -27,6 +29,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
   onClose,
   onUseVideo,
 }) => {
+  const { t } = useI18n();
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [isInitializing, setIsInitializing] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
@@ -54,7 +57,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
       setErrorMsg(null);
 
       if (!navigator.mediaDevices?.getUserMedia) {
-        setErrorMsg('Este navegador no permite acceso directo a la cámara.');
+        setErrorMsg(t.camera.errNoMediaDevices);
         setIsInitializing(false);
         return;
       }
@@ -100,19 +103,17 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
       } catch (err) {
         const name = err instanceof DOMException ? err.name : '';
         if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-          setErrorMsg(
-            'Permiso de cámara o micrófono denegado. Habilita los permisos en tu navegador.'
-          );
+          setErrorMsg(t.camera.errPermissionDenied);
         } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-          setErrorMsg('No se encontró ninguna cámara disponible en este dispositivo.');
+          setErrorMsg(t.camera.errNotFound);
         } else {
-          setErrorMsg('No se pudo iniciar la cámara para grabar.');
+          setErrorMsg(t.camera.errInitFailed);
         }
       } finally {
         setIsInitializing(false);
       }
     },
-    [stopTracks]
+    [stopTracks, t.camera.errInitFailed, t.camera.errNoMediaDevices, t.camera.errNotFound, t.camera.errPermissionDenied]
   );
 
   useEffect(() => {
@@ -132,7 +133,11 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
 
   const handleToggleFacing = () => {
     if (isRecording) return;
-    setFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'));
+    setFacingMode((prev) => {
+      const next = prev === 'user' ? 'environment' : 'user';
+      trackEvent('camera_switch_facing', { next_facing: next });
+      return next;
+    });
   };
 
   const handleStartRecording = () => {
@@ -142,7 +147,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
     chunksRef.current = [];
 
     if (typeof MediaRecorder === 'undefined') {
-      setErrorMsg('Este navegador no soporta grabación directa de video (MediaRecorder).');
+      setErrorMsg(t.camera.errNoRecorder);
       return;
     }
 
@@ -177,7 +182,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
 
         const blob = new Blob(chunksRef.current, { type: actualMime });
         if (blob.size === 0) {
-          setErrorMsg('La grabación resultó vacía. Intenta grabar nuevamente.');
+          setErrorMsg(t.camera.errEmptyRecording);
           return;
         }
 
@@ -190,22 +195,25 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
       recorder.start(250);
       setElapsedSec(0);
       setIsRecording(true);
+      trackEvent('camera_recording_start', { facing_mode: facingMode });
       const startedAt = Date.now();
       timerRef.current = window.setInterval(() => {
         setElapsedSec((Date.now() - startedAt) / 1000);
       }, 150);
     } catch {
-      setErrorMsg('No se pudo iniciar la grabación de video en este navegador.');
+      setErrorMsg(t.camera.errStartFailed);
     }
   };
 
   const handleStopRecording = () => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      trackEvent('camera_recording_stop', { duration_sec: Math.round(elapsedSec) });
       recorderRef.current.stop();
     }
   };
 
   const handleClose = () => {
+    trackEvent('camera_modal_close');
     isCancellingRef.current = true;
     if (timerRef.current) window.clearInterval(timerRef.current);
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
@@ -219,7 +227,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Grabar video con cámara"
+      aria-label={t.camera.dialogAria}
       className="fixed inset-0 z-50 flex flex-col bg-[#09090B]/95 backdrop-blur-md"
     >
       {/* Top Bar */}
@@ -227,7 +235,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
         <div className="flex min-w-0 items-center gap-2">
           <Camera className="h-4 w-4 shrink-0 text-[#FF453A]" aria-hidden="true" />
           <h2 className="font-display truncate text-sm font-semibold text-white sm:text-base">
-            Grabar video
+            {t.camera.title}
           </h2>
         </div>
 
@@ -236,21 +244,23 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
             <button
               type="button"
               onClick={handleToggleFacing}
+              {...gtmProps('camera_switch_facing', 'camera', facingMode)}
               className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-zinc-700 bg-[#131316] px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-500 hover:text-white whitespace-nowrap sm:min-h-[40px] sm:px-3"
             >
               <SwitchCamera className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline">Cambiar cámara</span>
-              <span className="sm:hidden">Cámara</span>
+              <span className="hidden sm:inline">{t.camera.switchCamera}</span>
+              <span className="sm:hidden">{t.camera.cameraShort}</span>
             </button>
           )}
 
           <button
             type="button"
             onClick={handleClose}
+            {...gtmProps('camera_close', 'camera', t.camera.close)}
             className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-zinc-700 bg-[#131316] px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-zinc-500 hover:text-white whitespace-nowrap sm:min-h-[40px] sm:px-3"
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Cerrar</span>
+            <span>{t.camera.close}</span>
           </button>
         </div>
       </header>
@@ -270,7 +280,7 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
 
           {isInitializing && !errorMsg && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-xs text-zinc-300">
-              Iniciando cámara...
+              {t.camera.initializing}
             </div>
           )}
 
@@ -279,10 +289,14 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
               <p className="max-w-sm text-xs leading-relaxed text-[#FF453A]">{errorMsg}</p>
               <button
                 type="button"
-                onClick={() => startCameraStream(facingMode)}
+                onClick={() => {
+                  trackEvent('camera_retry_permission');
+                  startCameraStream(facingMode);
+                }}
+                {...gtmProps('camera_retry', 'camera', t.camera.retryAccess)}
                 className="min-h-[40px] rounded-lg border border-zinc-700 bg-[#1C1C21] px-4 text-xs font-medium text-white hover:border-zinc-500"
               >
-                Reintentar acceso a cámara
+                {t.camera.retryAccess}
               </button>
             </div>
           )}
@@ -301,20 +315,22 @@ export const CameraRecorderModal: React.FC<CameraRecorderModalProps> = ({
             <button
               type="button"
               onClick={handleStopRecording}
+              {...gtmProps('camera_stop_recording', 'camera', t.camera.stopRecording(formatTimecode(elapsedSec)))}
               className="flex min-h-[52px] w-full max-w-xs items-center justify-center gap-2 rounded-xl bg-[#FF453A] px-6 text-sm font-semibold text-white transition hover:opacity-90 active:scale-[0.98]"
             >
               <Square className="h-4 w-4 fill-current" aria-hidden="true" />
-              <span>Detener grabación ({formatTimecode(elapsedSec)})</span>
+              <span>{t.camera.stopRecording(formatTimecode(elapsedSec))}</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={handleStartRecording}
               disabled={isInitializing || Boolean(errorMsg)}
+              {...gtmProps('camera_start_recording', 'camera', t.camera.startRecording)}
               className="flex min-h-[52px] w-full max-w-xs items-center justify-center gap-2 rounded-xl bg-[#FAFAFA] px-6 text-sm font-semibold text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.98] disabled:opacity-50"
             >
               <Video className="h-4 w-4 text-[#FF453A]" aria-hidden="true" />
-              <span>Iniciar grabación</span>
+              <span>{t.camera.startRecording}</span>
             </button>
           )}
         </div>

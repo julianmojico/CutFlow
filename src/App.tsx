@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Captions, Download, ExternalLink, Scissors, Sliders, Type } from './components/Icons';
+import { Captions, Download, ExternalLink, Film, Scissors, Sliders, Type, X } from './components/Icons';
 import { CameraRecorderModal } from './components/CameraRecorderModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { TopBar } from './components/TopBar';
@@ -23,7 +23,8 @@ import type {
   VideoAsset,
   VideoEffectsConfig,
 } from './types/editor';
-import { trackEvent } from './utils/analytics';
+import { useI18n } from './i18n/I18nContext';
+import { gtmProps, trackEvent, trackPageView } from './utils/analytics';
 import {
   analyzeVideoAudio,
   formatBytes,
@@ -32,6 +33,7 @@ import {
   mapOriginalToEditedTime,
   mergeSortedCuts,
 } from './utils/audioEngine';
+import { detectVideoAspectRatio } from './utils/subtitleRenderer';
 
 const MAX_VIDEO_FILE_BYTES = 500 * 1024 * 1024; // 500 MB input video limit
 
@@ -66,13 +68,15 @@ const DEFAULT_AUDIO_CONFIG: AudioAnalysisConfig = {
 const MAX_RETENTION_MS = 60 * 60 * 1000; // Strict 1-hour maximum retention
 
 export default function App() {
+  const { language, t } = useI18n();
   const [asset, setAsset] = useState<VideoAsset | null>(null);
   const [sourceBlob, setSourceBlob] = useState<Blob | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showCamera, setShowCamera] = useState(false);
 
   const [activeTab, setActiveTab] = useState<EditorTab>('audio');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatioPreset>('original');
+  const [aspectRatio, setAspectRatio] = useState<AspectRatioPreset>('16:9');
+  const [nativeAspectLabel, setNativeAspectLabel] = useState<string | null>(null);
   const [fitMode, setFitMode] = useState<FitMode>('contain');
 
   const [audioConfig, setAudioConfig] = useState<AudioAnalysisConfig>(DEFAULT_AUDIO_CONFIG);
@@ -90,11 +94,79 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [skipCuts, setSkipCuts] = useState(true);
+  const [importSnack, setImportSnack] = useState<{
+    width: number;
+    height: number;
+    ratioLabel: string;
+  } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
+  const userSelectedAspectRef = useRef(false);
+  const snackTimerRef = useRef<number | null>(null);
+  const lastTrackedPathRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const viewPath = showCamera
+      ? '/camera'
+      : asset
+        ? `/editor/${activeTab}`
+        : '/upload';
+
+    // Skip duplicating the initial landing page_view already sent by gtag('config', ...) on load
+    if (lastTrackedPathRef.current === null && viewPath === '/upload') {
+      lastTrackedPathRef.current = viewPath;
+      return;
+    }
+
+    if (lastTrackedPathRef.current === viewPath) return;
+    lastTrackedPathRef.current = viewPath;
+
+    const viewTitle = showCamera
+      ? `CutFlow Studio — ${t.camera.title}`
+      : asset
+        ? `CutFlow Studio — ${t.tabs[activeTab]}`
+        : t.seo.title;
+
+    trackPageView(viewPath, viewTitle, {
+      ui_language: language,
+      has_video: Boolean(asset),
+    });
+  }, [activeTab, asset, language, showCamera, t.camera.title, t.seo.title, t.tabs]);
+
+  const showImportSnack = useCallback((width: number, height: number, ratioLabel: string) => {
+    setImportSnack({ width, height, ratioLabel });
+    if (snackTimerRef.current) {
+      window.clearTimeout(snackTimerRef.current);
+    }
+    snackTimerRef.current = window.setTimeout(() => {
+      setImportSnack(null);
+      snackTimerRef.current = null;
+    }, 6000);
+  }, []);
+
+  const dismissImportSnack = useCallback(() => {
+    if (snackTimerRef.current) {
+      window.clearTimeout(snackTimerRef.current);
+      snackTimerRef.current = null;
+    }
+    setImportSnack(null);
+  }, []);
+
+  const handleChangeAspectRatio = useCallback((next: AspectRatioPreset) => {
+    userSelectedAspectRef.current = true;
+    setAspectRatio(next);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (snackTimerRef.current) {
+        window.clearTimeout(snackTimerRef.current);
+      }
+    };
+  }, []);
 
   const goToTab = useCallback((tab: EditorTab, scrollToPanel = true) => {
     setActiveTab(tab);
@@ -151,7 +223,7 @@ export default function App() {
     async (blob: Blob, config: AudioAnalysisConfig, fallbackDuration?: number) => {
       setIsAnalyzing(true);
       try {
-        const res = await analyzeVideoAudio(blob, config, fallbackDuration);
+        const res = await analyzeVideoAudio(blob, config, fallbackDuration, language);
         setPeaks(res.peaks);
         setSpeechRegions(res.speechRegions);
         setCuts((prev) => {
@@ -167,16 +239,14 @@ export default function App() {
         setIsAnalyzing(false);
       }
     },
-    []
+    [language]
   );
 
   const loadVideoBlob = useCallback(
     async (blob: Blob, fileName: string, mimeType: string) => {
       setUploadError(null);
       if (blob.size > MAX_VIDEO_FILE_BYTES) {
-        throw new Error(
-          `El video pesa ${formatBytes(blob.size)} y supera el límite máximo de 500 MB.`
-        );
+        throw new Error(t.errors.fileTooLarge(formatBytes(blob.size)));
       }
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
@@ -185,34 +255,82 @@ export default function App() {
       objectUrlRef.current = url;
 
       const probe = document.createElement('video');
+      probe.muted = true;
+      probe.playsInline = true;
+      probe.preload = 'auto';
       probe.src = url;
-      probe.preload = 'metadata';
 
       const meta = await new Promise<{ duration: number; width: number; height: number }>(
         (resolve, reject) => {
+          let settled = false;
+          let metaFallbackTimer: number | null = null;
+          let hardTimeoutTimer: number | null = null;
+
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            // Read intrinsic dimensions & duration BEFORE clearing probe src/load!
+            const duration = Number.isFinite(probe.duration) ? probe.duration : 0;
+            const width = probe.videoWidth || 1280;
+            const height = probe.videoHeight || 720;
+            cleanup();
+            resolve({ duration, width, height });
+          };
+
+          const onLoadedData = () => {
+            if (probe.videoWidth > 0 && probe.videoHeight > 0) {
+              finish();
+            }
+          };
+
           const onMeta = () => {
-            cleanup();
-            resolve({
-              duration: Number.isFinite(probe.duration) ? probe.duration : 0,
-              width: probe.videoWidth || 1280,
-              height: probe.videoHeight || 720,
-            });
+            if (probe.videoWidth > 0 && probe.videoHeight > 0) {
+              if (probe.readyState >= 2) {
+                finish();
+              } else if (!metaFallbackTimer) {
+                // Allow a brief window for loadeddata to apply rotation metadata if needed
+                metaFallbackTimer = window.setTimeout(finish, 350);
+              }
+            }
           };
+
           const onErr = () => {
+            if (settled) return;
+            settled = true;
             cleanup();
-            reject(new Error('El navegador no pudo decodificar este archivo de video.'));
+            reject(new Error(t.errors.decodeVideoFailed));
           };
+
           const cleanup = () => {
+            if (metaFallbackTimer) {
+              window.clearTimeout(metaFallbackTimer);
+              metaFallbackTimer = null;
+            }
+            if (hardTimeoutTimer) {
+              window.clearTimeout(hardTimeoutTimer);
+              hardTimeoutTimer = null;
+            }
             probe.removeEventListener('loadedmetadata', onMeta);
+            probe.removeEventListener('loadeddata', onLoadedData);
+            probe.removeEventListener('canplay', onLoadedData);
+            probe.removeEventListener('resize', onLoadedData);
             probe.removeEventListener('error', onErr);
             probe.removeAttribute('src');
             probe.load();
           };
+
           probe.addEventListener('loadedmetadata', onMeta);
+          probe.addEventListener('loadeddata', onLoadedData);
+          probe.addEventListener('canplay', onLoadedData);
+          probe.addEventListener('resize', onLoadedData);
           probe.addEventListener('error', onErr);
+          hardTimeoutTimer = window.setTimeout(finish, 4000);
+          probe.load();
         }
       );
 
+      const detectedRatio = detectVideoAspectRatio(meta.width, meta.height);
+      userSelectedAspectRef.current = false;
       setSourceBlob(blob);
       setAsset({
         url,
@@ -223,7 +341,9 @@ export default function App() {
         width: meta.width,
         height: meta.height,
       });
-      setAspectRatio('original');
+      setAspectRatio(detectedRatio.preset);
+      setNativeAspectLabel(detectedRatio.nativeLabel);
+      showImportSnack(meta.width, meta.height, detectedRatio.displayLabel);
       setCurrentTime(0);
       setIsPlaying(false);
       setCuts([]);
@@ -231,6 +351,9 @@ export default function App() {
       setDetectedLanguage(null);
       trackEvent('video_loaded', {
         source: fileName.startsWith('grabacion-') ? 'camera' : 'upload',
+        detected_aspect_ratio: detectedRatio.displayLabel,
+        width: meta.width,
+        height: meta.height,
       });
 
       const analysis = await runAudioAnalysis(blob, audioConfig, meta.duration);
@@ -238,16 +361,14 @@ export default function App() {
         setAsset((prev) => (prev ? { ...prev, duration: analysis.duration } : prev));
       }
     },
-    [audioConfig, runAudioAnalysis]
+    [audioConfig, runAudioAnalysis, showImportSnack, t.errors]
   );
 
   const handleSelectFile = async (file: File) => {
     try {
       await loadVideoBlob(file, file.name, file.type);
     } catch (err) {
-      setUploadError(
-        err instanceof Error ? err.message : 'No se pudo cargar el video seleccionado.'
-      );
+      setUploadError(err instanceof Error ? err.message : t.errors.loadVideoFailed);
     }
   };
 
@@ -261,19 +382,53 @@ export default function App() {
     const onPause = () => setIsPlaying(false);
     const onEnded = () => setIsPlaying(false);
     const onTimeUpdate = () => setCurrentTime(video.currentTime);
+    const syncDecodedDimensions = () => {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (vw > 0 && vh > 0 && asset && (vw !== asset.width || vh !== asset.height)) {
+        const detected = detectVideoAspectRatio(vw, vh);
+        setAsset((prev) =>
+          prev
+            ? {
+                ...prev,
+                width: vw,
+                height: vh,
+                duration:
+                  prev.duration > 0
+                    ? prev.duration
+                    : Number.isFinite(video.duration)
+                      ? video.duration
+                      : prev.duration,
+              }
+            : prev
+        );
+        setNativeAspectLabel(detected.nativeLabel);
+        if (!userSelectedAspectRef.current) {
+          setAspectRatio(detected.preset);
+        }
+        showImportSnack(vw, vh, detected.displayLabel);
+      }
+    };
 
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
     video.addEventListener('ended', onEnded);
     video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('loadedmetadata', syncDecodedDimensions);
+    video.addEventListener('loadeddata', syncDecodedDimensions);
+    video.addEventListener('resize', syncDecodedDimensions);
+    syncDecodedDimensions();
 
     return () => {
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('ended', onEnded);
       video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('loadedmetadata', syncDecodedDimensions);
+      video.removeEventListener('loadeddata', syncDecodedDimensions);
+      video.removeEventListener('resize', syncDecodedDimensions);
     };
-  }, [asset]);
+  }, [asset, showImportSnack]);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -341,7 +496,7 @@ export default function App() {
       endTime: end,
       kind: 'manual',
       enabled: true,
-      label: `Corte manual (${(end - start).toFixed(1)}s)`,
+      label: t.cuts.manualCut((end - start).toFixed(1)),
     };
     setCuts((prev) => mergeSortedCuts([...prev, cut]));
   };
@@ -360,8 +515,8 @@ export default function App() {
         kind: 'manual',
         enabled: true,
         label: trimmed
-          ? `Bloque borrado: «${preview}${trimmed.length > 26 ? '…' : ''}»`
-          : `Bloque borrado (${span.toFixed(1)}s)`,
+          ? t.cuts.deletedBlockWithText(preview, trimmed.length > 26)
+          : t.cuts.deletedBlock(span.toFixed(1)),
       };
       setCuts((prev) => mergeSortedCuts([...prev, cut]));
 
@@ -396,11 +551,11 @@ export default function App() {
   const activeCutCount = useMemo(() => cuts.filter((c) => c.enabled).length, [cuts]);
 
   const TABS: Array<{ id: EditorTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-    { id: 'audio', label: 'Audio', icon: Scissors },
-    { id: 'subtitles', label: 'Texto', icon: Captions },
-    { id: 'style', label: 'Estilo', icon: Type },
-    { id: 'effects', label: 'Efectos', icon: Sliders },
-    { id: 'export', label: 'Exportar', icon: Download },
+    { id: 'audio', label: t.tabs.audio, icon: Scissors },
+    { id: 'subtitles', label: t.tabs.subtitles, icon: Captions },
+    { id: 'style', label: t.tabs.style, icon: Type },
+    { id: 'effects', label: t.tabs.effects, icon: Sliders },
+    { id: 'export', label: t.tabs.export, icon: Download },
   ];
 
   const handleToggleBlurBorders = useCallback(() => {
@@ -471,7 +626,8 @@ export default function App() {
               }
               effects={effects}
               aspectRatio={aspectRatio}
-              onChangeAspectRatio={setAspectRatio}
+              nativeAspectLabel={nativeAspectLabel}
+              onChangeAspectRatio={handleChangeAspectRatio}
               fitMode={fitMode}
               onToggleFitMode={() =>
                 setFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'))
@@ -500,8 +656,8 @@ export default function App() {
             className="min-w-0 scroll-mt-[68px] flex flex-col rounded-2xl border border-zinc-800 bg-[#131316] lg:col-span-5"
           >
             <nav
-              aria-label="Herramientas de edición"
-              className="hidden lg:grid lg:grid-cols-5 border-b border-zinc-800/80 p-1.5 gap-1"
+              aria-label={t.tabs.desktopNavAria}
+              className="hidden lg:flex lg:items-center border-b border-zinc-800/80 p-1.5 gap-1"
             >
               {TABS.map((tab) => {
                 const Icon = tab.icon;
@@ -511,13 +667,14 @@ export default function App() {
                     key={tab.id}
                     type="button"
                     onClick={() => goToTab(tab.id, false)}
-                    className={`flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium transition whitespace-nowrap ${
+                    {...gtmProps(`tab_desktop_${tab.id}`, 'navigation', tab.label)}
+                    className={`flex min-h-[40px] flex-1 items-center justify-center gap-1 rounded-lg px-2 text-[11px] xl:text-xs font-medium transition whitespace-nowrap ${
                       active
                         ? 'bg-[#FAFAFA] text-[#09090B]'
                         : 'text-zinc-400 hover:bg-[#1C1C21] hover:text-zinc-100'
                     }`}
                   >
-                    <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                    <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span>{tab.label}</span>
                   </button>
                 );
@@ -587,8 +744,9 @@ export default function App() {
                   subtitleStyle={subtitleStyle}
                   effects={effects}
                   aspectRatio={aspectRatio}
+                  nativeAspectLabel={nativeAspectLabel}
                   fitMode={fitMode}
-                  onChangeAspectRatio={setAspectRatio}
+                  onChangeAspectRatio={handleChangeAspectRatio}
                   onToggleFitMode={() =>
                     setFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'))
                   }
@@ -602,7 +760,7 @@ export default function App() {
 
       {asset && (
         <nav
-          aria-label="Navegación móvil"
+          aria-label={t.tabs.mobileNavAria}
           className="fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-800 bg-[#09090B]/95 backdrop-blur-md pb-safe lg:hidden"
         >
           <div className="grid h-16 grid-cols-5 items-center">
@@ -614,15 +772,16 @@ export default function App() {
                   key={tab.id}
                   type="button"
                   onClick={() => goToTab(tab.id, true)}
-                  className={`flex min-h-[44px] flex-col items-center justify-center gap-1 transition ${
+                  {...gtmProps(`tab_mobile_${tab.id}`, 'navigation', tab.label)}
+                  className={`flex min-h-[44px] min-w-0 flex-col items-center justify-center gap-1 px-0.5 transition ${
                     active ? 'text-[#FAFAFA]' : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   <Icon
-                    className={`h-5 w-5 ${active ? 'text-[#FF453A]' : ''}`}
+                    className={`h-5 w-5 shrink-0 ${active ? 'text-[#FF453A]' : ''}`}
                     aria-hidden="true"
                   />
-                  <span className="text-[10px] font-medium tracking-tight leading-none whitespace-nowrap">
+                  <span className="max-w-full truncate text-[10px] font-medium tracking-tight leading-none whitespace-nowrap">
                     {tab.label}
                   </span>
                 </button>
@@ -638,11 +797,13 @@ export default function App() {
         }`}
       >
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-2 gap-y-1">
-          <span>Desarrollo: Julian Mojico ·</span>
+          <span>{t.footer.developedBy}</span>
           <a
             href="https://www.linkedin.com/in/julianmojico/"
             target="_blank"
             rel="noopener noreferrer"
+            onClick={() => trackEvent('outbound_click', { destination: 'linkedin' })}
+            {...gtmProps('footer_linkedin_link', 'footer', 'LinkedIn')}
             className="inline-flex items-center gap-1 font-medium text-zinc-200 underline decoration-zinc-700 underline-offset-4 transition hover:text-white hover:decoration-white"
           >
             <span>LinkedIn</span>
@@ -659,6 +820,38 @@ export default function App() {
             handleSelectFile(file);
           }}
         />
+      )}
+
+      {importSnack && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-20 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-md -translate-x-1/2 items-center justify-between gap-3 rounded-xl border border-zinc-700 bg-[#131316]/95 px-3.5 py-2.5 text-xs text-zinc-100 shadow-2xl backdrop-blur-md lg:bottom-6"
+        >
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#FF453A]/15 text-[#FF453A]">
+              <Film className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+            <p className="leading-snug text-zinc-100">
+              {t.importSnack.message(
+                `${importSnack.width}×${importSnack.height}`,
+                importSnack.ratioLabel
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              trackEvent('import_snack_dismiss');
+              dismissImportSnack();
+            }}
+            {...gtmProps('import_snack_dismiss', 'notification', 'close')}
+            aria-label={t.importSnack.closeAria}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-800 hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
       )}
 
       <OfflineIndicator />

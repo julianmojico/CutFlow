@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import { Scissors } from './Icons';
 import type { CutSegment, SubtitleCue } from '../types/editor';
+import { useI18n } from '../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../utils/analytics';
 import { formatTimecode } from '../utils/audioEngine';
 
 interface WaveformTimelineProps {
@@ -26,6 +28,7 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
   onToggleCut,
   onAddManualCutAtPlayhead,
 }) => {
+  const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement | null>(null);
   const isScrubbingRef = useRef(false);
 
@@ -55,6 +58,7 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
       } catch {
         // ignore
       }
+      trackEvent('timeline_scrub', { time_sec: Number(currentTime.toFixed(2)) });
     }
   };
 
@@ -64,19 +68,23 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
     <section className="min-w-0 overflow-hidden rounded-2xl border border-zinc-800 bg-[#131316] p-3 sm:p-4">
       <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-zinc-400">
-          <span className="font-medium text-zinc-200">Línea de tiempo de audio</span>
+          <span className="font-medium text-zinc-200">{t.timeline.title}</span>
           {isAnalyzing && (
-            <span className="font-mono text-[11px] text-zinc-400">Analizando señal...</span>
+            <span className="font-mono text-[11px] text-zinc-400">{t.timeline.analyzing}</span>
           )}
         </div>
 
         <button
           type="button"
-          onClick={onAddManualCutAtPlayhead}
+          onClick={() => {
+            trackEvent('manual_cut_add', { time_sec: Number(currentTime.toFixed(2)) });
+            onAddManualCutAtPlayhead();
+          }}
+          {...gtmProps('timeline_add_manual_cut', 'audio_cuts', t.timeline.cutHere)}
           className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-zinc-700 bg-[#1C1C21] px-2.5 py-1 text-xs font-medium text-zinc-200 transition hover:border-zinc-500 hover:text-white whitespace-nowrap shrink-0"
         >
           <Scissors className="h-3.5 w-3.5 text-[#FF453A]" aria-hidden="true" />
-          <span>Cortar 0.8s aquí</span>
+          <span>{t.timeline.cutHere}</span>
         </button>
       </div>
 
@@ -86,6 +94,7 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        {...gtmProps('timeline_waveform_scrub', 'playback', 'Waveform')}
         className="relative h-20 w-full cursor-ew-resize select-none overflow-hidden rounded-xl border border-zinc-800 bg-[#09090B] touch-none"
       >
         {/* Cut segments shading */}
@@ -98,12 +107,18 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
               <button
                 key={cut.id}
                 type="button"
-                title={`${cut.label} — Clic para ${cut.enabled ? 'conservar' : 'cortar'}`}
+                title={t.timeline.segmentClickHint(cut.label, cut.enabled)}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
+                  trackEvent('cut_toggle', {
+                    kind: cut.kind,
+                    enabled: !cut.enabled,
+                    source: 'timeline',
+                  });
                   onToggleCut(cut.id);
                 }}
+                {...gtmProps('timeline_toggle_cut', 'audio_cuts', cut.kind)}
                 style={{ left: `${left}%`, width: `${width}%` }}
                 className={`absolute inset-y-0 z-10 border-x transition ${
                   cut.enabled
@@ -157,7 +172,11 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
               <button
                 key={cue.id}
                 type="button"
-                onClick={() => onSeek(cue.startTime)}
+                onClick={() => {
+                  trackEvent('subtitle_cue_seek', { source: 'timeline' });
+                  onSeek(cue.startTime);
+                }}
+                {...gtmProps('timeline_seek_cue', 'subtitles', 'Seek cue')}
                 style={{ left: `${left}%`, width: `${width}%` }}
                 title={`${formatTimecode(cue.startTime)}: ${cue.text}`}
                 className={`absolute inset-y-1 truncate rounded px-1 text-left text-[10px] font-medium transition ${
@@ -177,15 +196,15 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-sm bg-zinc-700/70 border border-zinc-500/60" />
-            Silencio / pausa
+            {t.timeline.legendSilence}
           </span>
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#FF453A]/35 border border-[#FF453A]/80" />
-            Posible «emm / err»
+            {t.timeline.legendFiller}
           </span>
         </div>
         <span className="font-mono tabular-nums">
-          Toca una región para activar o conservar
+          {t.timeline.tapRegionHint}
         </span>
       </div>
     </section>

@@ -1,6 +1,6 @@
 {
   "name": "CutFlow Studio",
-  "description": "Editor de video y subtítulos PWA con análisis local de audio, eliminación de silencios y muletillas, animaciones de texto, efectos de video y exportación SRT y MP4/WebM.",
+  "description": "Edita videos gratis en tu navegador: elimina silencios y muletillas, crea subtítulos animados tipo karaoke, aplica efectos y exporta en MP4 o SRT sin cuenta.",
   "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

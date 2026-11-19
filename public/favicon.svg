@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="118" fill="#09090B"/>
+  <rect x="8" y="8" width="496" height="496" rx="110" stroke="#27272A" stroke-width="16"/>
+  <!-- Audio waveform bars -->
+  <rect x="96" y="210" width="34" height="92" rx="8" fill="#FAFAFA"/>
+  <rect x="152" y="146" width="34" height="220" rx="8" fill="#FAFAFA"/>
+  <rect x="208" y="186" width="32" height="140" rx="8" fill="#71717A"/>
+  <rect x="274" y="126" width="34" height="260" rx="8" fill="#FAFAFA"/>
+  <rect x="330" y="172" width="34" height="168" rx="8" fill="#FAFAFA"/>
+  <rect x="386" y="214" width="34" height="84" rx="8" fill="#FAFAFA"/>
+  <!-- Signal vermilion razor cut line -->
+  <rect x="246" y="72" width="22" height="368" rx="11" fill="#FF453A"/>
+</svg>

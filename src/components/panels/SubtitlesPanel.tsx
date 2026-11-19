@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { ArrowRight, Globe, Loader2, Plus, Scissors, Sparkles, Trash2 } from '../Icons';
 import type { SubtitleCue, TimeRegion } from '../../types/editor';
+import { useI18n } from '../../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../../utils/analytics';
 import { extractCompactWavChunksForTranscription, formatTimecode } from '../../utils/audioEngine';
 
 interface SubtitlesPanelProps {
@@ -30,6 +32,7 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
   onSeek,
   onNextStep,
 }) => {
+  const { language, t } = useI18n();
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [stageText, setStageText] = useState('');
@@ -37,16 +40,17 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
 
   const handleAutoTranscribe = async () => {
     if (!sourceBlob || isTranscribing) return;
+    trackEvent('auto_transcribe_start', { duration_sec: Math.round(duration) });
     setErrorMsg(null);
     setIsTranscribing(true);
     setProgress(8);
-    setStageText('Extrayendo pista de audio...');
+    setStageText(t.subtitlesPanel.stageExtracting);
 
     let progressTimer: number | undefined;
     try {
-      const { chunks } = await extractCompactWavChunksForTranscription(sourceBlob, 90);
+      const { chunks } = await extractCompactWavChunksForTranscription(sourceBlob, 90, language);
       if (chunks.length === 0) {
-        throw new Error('No se encontró contenido de audio para transcribir.');
+        throw new Error(t.subtitlesPanel.stageNoAudio);
       }
 
       const mergedCues: SubtitleCue[] = [];
@@ -59,8 +63,8 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
         setProgress(basePct);
         setStageText(
           chunks.length > 1
-            ? `Transcribiendo audio (tramo ${i + 1} de ${chunks.length})...`
-            : 'Transcribiendo y detectando idioma...'
+            ? t.subtitlesPanel.stageChunk(i + 1, chunks.length)
+            : t.subtitlesPanel.stageTranscribing
         );
 
         if (progressTimer) window.clearInterval(progressTimer);
@@ -98,11 +102,12 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
                 duration: chunk.duration,
                 speechRegions: localRegions,
                 languageHint: resolvedLanguage || undefined,
+                uiLanguage: language,
               }),
             });
           } catch (networkErr) {
             if (attempt < maxClientAttempts) {
-              setStageText(`Conexión inestable, reintentando (${attempt}/${maxClientAttempts - 1})...`);
+              setStageText(t.subtitlesPanel.stageRetryNetwork(attempt, maxClientAttempts - 1));
               await new Promise((r) => setTimeout(r, 1800 * attempt));
               continue;
             }
@@ -122,20 +127,19 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
 
           const isRetryable = [429, 502, 503, 504].includes(response.status);
           if (isRetryable && attempt < maxClientAttempts) {
-            setStageText(
-              `Modelo con alta demanda, reintentando (${attempt}/${maxClientAttempts - 1})...`
-            );
+            setStageText(t.subtitlesPanel.stageRetryBusy(attempt, maxClientAttempts - 1));
             await new Promise((r) => setTimeout(r, 2000 * attempt));
             continue;
           }
 
-          throw new Error(payload.error || 'No se pudo completar la transcripción automática.');
+          throw new Error(payload.error || t.subtitlesPanel.errorDefault);
         }
 
         if (
           !resolvedLanguage &&
           payload.detectedLanguage &&
-          payload.detectedLanguage !== 'Sin voz detectada'
+          payload.detectedLanguage !== 'Sin voz detectada' &&
+          payload.detectedLanguage !== t.subtitlesPanel.noSpeechDetected
         ) {
           resolvedLanguage = payload.detectedLanguage;
         } else if (!resolvedLanguage && payload.detectedLanguage) {
@@ -154,14 +158,19 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
 
       if (progressTimer) window.clearInterval(progressTimer);
       setProgress(100);
-      setStageText('Transcripción completada');
-      onChangeDetectedLanguage(resolvedLanguage || 'Desconocido');
+      setStageText(t.subtitlesPanel.stageDone);
+      onChangeDetectedLanguage(resolvedLanguage || t.subtitlesPanel.unknownLanguage);
       onChangeCues(mergedCues);
+      trackEvent('auto_transcribe_success', {
+        cues_count: mergedCues.length,
+        language: resolvedLanguage || 'unknown',
+      });
     } catch (err) {
       if (progressTimer) window.clearInterval(progressTimer);
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Error inesperado al transcribir el audio.'
-      );
+      const message =
+        err instanceof Error ? err.message : t.subtitlesPanel.errorUnexpected;
+      setErrorMsg(message);
+      trackEvent('auto_transcribe_error', { message: message.slice(0, 80) });
     } finally {
       setIsTranscribing(false);
     }
@@ -174,7 +183,7 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
       id: `cue-${Date.now()}`,
       startTime: start,
       endTime: Math.max(start + 0.4, end),
-      text: 'Nuevo subtítulo',
+      text: t.subtitlesPanel.newSubtitleDefault,
     };
     onChangeCues([...cues, next].sort((a, b) => a.startTime - b.startTime));
   };
@@ -209,21 +218,25 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="font-display text-base font-semibold text-white">
-            Transcripción y subtítulos
+            {t.subtitlesPanel.title}
           </h2>
           <p className="mt-0.5 text-xs text-zinc-400">
-            {cues.length} líneas
-            {detectedLanguage ? ` · Idioma detectado: ${detectedLanguage}` : ''}
+            {t.subtitlesPanel.linesCount(cues.length)}
+            {detectedLanguage ? t.subtitlesPanel.detectedLanguageSuffix(detectedLanguage) : ''}
           </p>
         </div>
 
         <button
           type="button"
-          onClick={addCueAtPlayhead}
+          onClick={() => {
+            trackEvent('subtitle_cue_add');
+            addCueAtPlayhead();
+          }}
+          {...gtmProps('subtitles_add_cue', 'subtitles', t.subtitlesPanel.addLine)}
           className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-zinc-700 bg-[#1C1C21] px-3 py-1.5 text-xs font-medium text-zinc-100 transition hover:border-zinc-500 whitespace-nowrap shrink-0"
         >
           <Plus className="h-3.5 w-3.5" />
-          <span>Añadir línea</span>
+          <span>{t.subtitlesPanel.addLine}</span>
         </button>
       </div>
 
@@ -233,6 +246,7 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
           type="button"
           onClick={handleAutoTranscribe}
           disabled={!sourceBlob || isTranscribing}
+          {...gtmProps('subtitles_auto_transcribe', 'subtitles', t.subtitlesPanel.autoTranscribeBtn)}
           className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#FAFAFA] px-4 text-sm font-semibold text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.98] disabled:opacity-50"
         >
           {isTranscribing ? (
@@ -241,7 +255,9 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
             <Sparkles className="h-4 w-4" />
           )}
           <span>
-            {isTranscribing ? 'Transcribiendo audio...' : 'Transcripción automática'}
+            {isTranscribing
+              ? t.subtitlesPanel.transcribingBtn
+              : t.subtitlesPanel.autoTranscribeBtn}
           </span>
         </button>
 
@@ -264,7 +280,7 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
           <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-[#09090B] px-3.5 py-2.5 text-xs">
             <span className="flex items-center gap-2 text-zinc-300">
               <Globe className="h-3.5 w-3.5 text-zinc-400" aria-hidden="true" />
-              <span>Idioma detectado</span>
+              <span>{t.subtitlesPanel.detectedLanguageLabel}</span>
             </span>
             <span className="font-semibold text-white">{detectedLanguage}</span>
           </div>
@@ -281,7 +297,7 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
       <div className="space-y-2.5 border-t border-zinc-800/80 pt-4">
         {cues.length === 0 ? (
           <p className="rounded-xl border border-zinc-800/80 bg-[#09090B] p-4 text-center text-xs text-zinc-400">
-            Pulsa «Transcripción automática» para generar los subtítulos del video o usa «Añadir línea».
+            {t.subtitlesPanel.emptyState}
           </p>
         ) : (
           <div className="max-h-[360px] space-y-2.5 overflow-y-auto pr-1">
@@ -300,7 +316,11 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <button
                       type="button"
-                      onClick={() => onSeek(cue.startTime)}
+                      onClick={() => {
+                        trackEvent('subtitle_cue_seek', { source: 'panel' });
+                        onSeek(cue.startTime);
+                      }}
+                      {...gtmProps('subtitles_cue_seek', 'subtitles', 'Seek cue')}
                       className="flex items-center gap-2 font-mono text-[11px] text-zinc-300 tabular-nums hover:text-white"
                     >
                       <span className="text-zinc-500">#{idx + 1}</span>
@@ -312,16 +332,24 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => splitCue(cue)}
-                        title="Dividir bloque en dos"
+                        onClick={() => {
+                          trackEvent('subtitle_cue_split');
+                          splitCue(cue);
+                        }}
+                        {...gtmProps('subtitles_cue_split', 'subtitles', 'split_cue')}
+                        title={t.subtitlesPanel.splitCueTitle}
                         className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-white"
                       >
                         <Scissors className="h-3.5 w-3.5" />
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDeleteCue(cue)}
-                        title="Eliminar bloque y cortar fragmento de video"
+                        onClick={() => {
+                          trackEvent('subtitle_cue_delete');
+                          onDeleteCue(cue);
+                        }}
+                        {...gtmProps('subtitles_cue_delete', 'subtitles', 'delete_cue')}
+                        title={t.subtitlesPanel.deleteCueTitle}
                         className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-[#FF453A]"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -333,6 +361,8 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
                     rows={2}
                     value={cue.text}
                     onChange={(e) => updateCue(cue.id, { text: e.target.value })}
+                    onBlur={() => trackEvent('subtitle_cue_edit')}
+                    {...gtmProps('subtitles_cue_edit_text', 'subtitles', 'edit_cue_text')}
                     className="w-full resize-none rounded-lg border border-zinc-800 bg-[#131316] px-2.5 py-1.5 text-xs leading-relaxed text-white focus:border-zinc-500 focus:outline-none"
                   />
                 </div>
@@ -346,10 +376,14 @@ export const SubtitlesPanel: React.FC<SubtitlesPanelProps> = ({
       <div className="border-t border-zinc-800/80 pt-4">
         <button
           type="button"
-          onClick={onNextStep}
+          onClick={() => {
+            trackEvent('next_step_click', { from: 'subtitles', to: 'style' });
+            onNextStep();
+          }}
+          {...gtmProps('subtitles_next_style', 'navigation', t.subtitlesPanel.nextStep)}
           className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-[#1C1C21] px-4 text-xs font-semibold text-white transition hover:border-zinc-500 hover:bg-zinc-800"
         >
-          <span>Personalizar estilo</span>
+          <span>{t.subtitlesPanel.nextStep}</span>
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>

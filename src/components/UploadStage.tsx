@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Camera, Captions, Film, Sliders, Upload, VolumeX } from './Icons';
 import { CameraRecorderModal } from './CameraRecorderModal';
+import { useI18n } from '../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../utils/analytics';
 
 interface UploadStageProps {
   onSelectFile: (file: File) => void;
@@ -13,6 +15,7 @@ export const UploadStage: React.FC<UploadStageProps> = ({
   onOpenCamera,
   errorMessage,
 }) => {
+  const { t } = useI18n();
   const [isDragging, setIsDragging] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
@@ -21,6 +24,7 @@ export const UploadStage: React.FC<UploadStageProps> = ({
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
+      trackEvent('video_drop', { file_type: file.type || 'unknown' });
       onSelectFile(file);
     }
   };
@@ -32,15 +36,13 @@ export const UploadStage: React.FC<UploadStageProps> = ({
         <div className="flex min-w-0 flex-col justify-between lg:col-span-6 lg:py-4">
           <div>
             <p className="text-xs font-medium tracking-wide text-zinc-400">
-              Estudio móvil de edición local · Android PWA
+              {t.upload.eyebrow}
             </p>
             <h1 className="mt-3 break-words font-display text-3xl font-bold tracking-tight text-white sm:text-5xl">
-              Limpia silencios, anima subtítulos y exporta sin límites. Sin registrarte. Gratis por siempre.
+              {t.upload.headline}
             </h1>
             <p className="mt-4 max-w-xl text-sm leading-relaxed text-zinc-400 sm:text-base">
-              Sube cualquier video desde tu dispositivo. Analizamos la forma de onda localmente para
-              detectar pausas y muletillas como «emm» o «err», sincronizar subtítulos animados y
-              renderizar el resultado con efectos visuales en cualquier relación de aspecto.
+              {t.upload.subheadline}
             </p>
           </div>
 
@@ -48,37 +50,37 @@ export const UploadStage: React.FC<UploadStageProps> = ({
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-white">
                 <VolumeX className="h-4 w-4 text-[#FF453A]" aria-hidden="true" />
-                <span>Cortes por señal</span>
+                <span>{t.upload.feature1Title}</span>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-                Detección local en decibelios para pausas largas y vacilaciones vocales.
+                {t.upload.feature1Desc}
               </p>
             </div>
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-white">
                 <Captions className="h-4 w-4 text-zinc-200" aria-hidden="true" />
-                <span>SRT y Karaoke</span>
+                <span>{t.upload.feature2Title}</span>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-                Transcripción automática con detección de idioma y subtítulos animados.
+                {t.upload.feature2Desc}
               </p>
             </div>
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-white">
                 <Sliders className="h-4 w-4 text-zinc-200" aria-hidden="true" />
-                <span>Etalonaje directo</span>
+                <span>{t.upload.feature3Title}</span>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-                Brillo, contraste, niveles, saturación, viñeta y desenfoque en vivo.
+                {t.upload.feature3Desc}
               </p>
             </div>
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-white">
                 <Film className="h-4 w-4 text-zinc-200" aria-hidden="true" />
-                <span>Cualquier formato</span>
+                <span>{t.upload.feature4Title}</span>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-zinc-400">
-                MP4, WebM, MOV o MKV hacia lienzos 9:16, 16:9, 1:1, 4:5 u original.
+                {t.upload.feature4Desc}
               </p>
             </div>
           </div>
@@ -104,10 +106,10 @@ export const UploadStage: React.FC<UploadStageProps> = ({
             </div>
 
             <h2 className="mt-5 font-display text-xl font-semibold text-white">
-              Selecciona o arrastra un video
+              {t.upload.dropTitle}
             </h2>
             <p className="mt-2 max-w-sm text-xs leading-relaxed text-zinc-400">
-              Todo el análisis de audio y renderizado ocurre dentro de tu navegador sin subir archivos a la nube.
+              {t.upload.dropDesc}
             </p>
 
             {errorMessage && (
@@ -117,13 +119,18 @@ export const UploadStage: React.FC<UploadStageProps> = ({
             )}
 
             <div className="mt-6 flex w-full max-w-xs flex-col gap-3">
-              <label className="flex min-h-[48px] cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#FAFAFA] px-5 py-3 text-sm font-semibold text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.98]">
+              <label
+                onClick={() => trackEvent('trigger_video_upload', { location: 'upload_stage' })}
+                {...gtmProps('upload_choose_file', 'upload', t.upload.chooseFile)}
+                className="flex min-h-[48px] cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#FAFAFA] px-5 py-3 text-sm font-semibold text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.98]"
+              >
                 <Upload className="h-4 w-4" aria-hidden="true" />
-                <span>Elegir video del dispositivo</span>
+                <span>{t.upload.chooseFile}</span>
                 <input
                   type="file"
                   accept="video/*,.mp4,.webm,.mov,.m4v,.mkv,.ogv"
                   className="sr-only"
+                  {...gtmProps('upload_file_input', 'upload', 'input')}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) onSelectFile(file);
@@ -134,16 +141,24 @@ export const UploadStage: React.FC<UploadStageProps> = ({
 
               <button
                 type="button"
-                onClick={() => (onOpenCamera ? onOpenCamera() : setShowCamera(true))}
+                onClick={() => {
+                  trackEvent('open_camera_modal', { location: 'upload_stage' });
+                  if (onOpenCamera) {
+                    onOpenCamera();
+                  } else {
+                    setShowCamera(true);
+                  }
+                }}
+                {...gtmProps('upload_record_camera', 'upload', t.upload.recordCamera)}
                 className="flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-[#1C1C21] px-4 py-2.5 text-xs font-semibold text-white transition hover:border-zinc-500 hover:bg-zinc-800 active:scale-[0.98]"
               >
                 <Camera className="h-4 w-4 text-[#FF453A]" aria-hidden="true" />
-                <span>Grabar video con cámara</span>
+                <span>{t.upload.recordCamera}</span>
               </button>
             </div>
 
             <p className="mt-6 font-mono text-[11px] text-zinc-500 tabular-nums">
-              MP4 · WebM · MOV · MKV · M4V · OGV · Máx. 500 MB
+              {t.upload.supportedFormats}
             </p>
           </div>
         </div>

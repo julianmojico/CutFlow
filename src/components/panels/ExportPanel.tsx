@@ -9,10 +9,11 @@ import type {
   VideoAsset,
   VideoEffectsConfig,
 } from '../../types/editor';
-import { trackEvent } from '../../utils/analytics';
+import { useI18n } from '../../i18n/I18nContext';
+import { gtmProps, trackEvent } from '../../utils/analytics';
 import { formatBytes, formatTimecode, generateSrt, getEditedDuration } from '../../utils/audioEngine';
 import { exportEditedVideo } from '../../utils/exportEngine';
-import { resolveCanvasDimensions } from '../../utils/subtitleRenderer';
+import { getAspectOptions, resolveCanvasDimensions } from '../../utils/subtitleRenderer';
 
 interface ExportPanelProps {
   asset: VideoAsset;
@@ -21,6 +22,7 @@ interface ExportPanelProps {
   subtitleStyle: SubtitleStyleConfig;
   effects: VideoEffectsConfig;
   aspectRatio: AspectRatioPreset;
+  nativeAspectLabel: string | null;
   fitMode: FitMode;
   onChangeAspectRatio: (preset: AspectRatioPreset) => void;
   onToggleFitMode: () => void;
@@ -34,11 +36,13 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
   subtitleStyle,
   effects,
   aspectRatio,
+  nativeAspectLabel,
   fitMode,
   onChangeAspectRatio,
   onToggleFitMode,
   onToggleBlurBorders,
 }) => {
+  const { language, t } = useI18n();
   const [applyCutsToSrt, setApplyCutsToSrt] = useState(true);
   const [copiedSrt, setCopiedSrt] = useState(false);
   const [quality, setQuality] = useState<'original' | '1080p' | '720p'>('1080p');
@@ -78,6 +82,8 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
     () => generateSrt(cues, cuts, applyCutsToSrt),
     [applyCutsToSrt, cues, cuts]
   );
+
+  const aspectOptions = useMemo(() => getAspectOptions(nativeAspectLabel), [nativeAspectLabel]);
 
   const targetDims = useMemo(
     () => resolveCanvasDimensions(aspectRatio, asset.width, asset.height, quality),
@@ -122,6 +128,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
       document.body.removeChild(ta);
     }
     setCopiedSrt(true);
+    trackEvent('export_srt_copy', { cues_count: cues.length });
     setTimeout(() => setCopiedSrt(false), 1800);
   };
 
@@ -136,7 +143,12 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
     abortRef.current = controller;
     setIsExporting(true);
     setProgress(0);
-    setStageLabel('Preparando motor de renderizado...');
+    setStageLabel(t.exportPanel.preparingRender);
+    trackEvent('export_mp4_start', {
+      aspect_ratio: aspectRatio,
+      quality,
+      blur_borders: effects.blurBorders && fitMode === 'contain',
+    });
 
     try {
       const result = await exportEditedVideo({
@@ -148,6 +160,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
         aspectRatio,
         fitMode,
         quality,
+        lang: language,
         onProgress: (pct, label) => {
           setProgress(pct);
           setStageLabel(label);
@@ -156,7 +169,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
       });
 
       const url = URL.createObjectURL(result.blob);
-      const fileName = `${baseName}_subtitulado.${result.extension}`;
+      const fileName = `${baseName}_${t.exportPanel.fileSuffix}.${result.extension}`;
       setExportedUrl({
         url,
         fileName,
@@ -174,8 +187,9 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
         blur_borders: effects.blurBorders && fitMode === 'contain',
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error al exportar el video.';
+      const msg = err instanceof Error ? err.message : t.exportPanel.exportErrorDefault;
       setExportError(msg);
+      trackEvent('export_mp4_error', { message: msg.slice(0, 80) });
     } finally {
       setIsExporting(false);
       abortRef.current = null;
@@ -183,6 +197,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
   };
 
   const handleCancelExport = () => {
+    trackEvent('export_mp4_cancel');
     abortRef.current?.abort();
   };
 
@@ -194,7 +209,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <div className="flex min-w-0 items-center gap-2">
             <Film className="h-4 w-4 shrink-0 text-[#FF453A]" />
             <h2 className="font-display text-base font-semibold text-white">
-              Exportar video MP4 con subtítulos
+              {t.exportPanel.title}
             </h2>
           </div>
           <span className="font-mono text-xs text-zinc-400 tabular-nums">
@@ -203,54 +218,79 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
         </div>
 
         <div className="space-y-2">
-          <span className="text-xs font-medium text-zinc-300">Formato de lienzo</span>
+          <span className="text-xs font-medium text-zinc-300">{t.exportPanel.canvasFormat}</span>
           <div className="grid grid-cols-3 gap-1.5">
-            {(['original', '9:16', '16:9', '1:1', '4:5', '21:9'] as AspectRatioPreset[]).map(
-              (preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => onChangeAspectRatio(preset)}
-                  className={`min-h-[38px] rounded-lg border text-xs font-medium transition ${
-                    aspectRatio === preset
-                      ? 'border-white bg-white text-[#09090B]'
-                      : 'border-zinc-800 bg-[#09090B] text-zinc-300 hover:border-zinc-600'
-                  }`}
-                >
-                  {preset === 'original' ? 'Original' : preset}
-                </button>
-              )
-            )}
+            {aspectOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  trackEvent('aspect_ratio_change', {
+                    aspect_ratio: opt.value,
+                    label: opt.label,
+                    location: 'export',
+                  });
+                  onChangeAspectRatio(opt.value);
+                }}
+                {...gtmProps(`export_aspect_${opt.value}`, 'export', opt.label)}
+                className={`min-h-[38px] rounded-lg border text-xs font-medium transition ${
+                  aspectRatio === opt.value
+                    ? 'border-white bg-white text-[#09090B]'
+                    : 'border-zinc-800 bg-[#09090B] text-zinc-300 hover:border-zinc-600'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="min-w-0">
-            <span className="mb-1.5 block text-xs text-zinc-300">Resolución</span>
+            <span className="mb-1.5 block text-xs text-zinc-300">{t.exportPanel.resolution}</span>
             <select
               value={quality}
-              onChange={(e) => setQuality(e.target.value as 'original' | '1080p' | '720p')}
+              onChange={(e) => {
+                const nextQuality = e.target.value as 'original' | '1080p' | '720p';
+                trackEvent('export_quality_change', { quality: nextQuality });
+                setQuality(nextQuality);
+              }}
+              {...gtmProps('export_quality_select', 'export', quality)}
               className="min-h-[40px] w-full rounded-lg border border-zinc-800 bg-[#09090B] px-2.5 text-xs text-white"
             >
-              <option value="1080p">Full HD (1080p)</option>
-              <option value="720p">Rápido (720p)</option>
-              <option value="original">Nativa del clip</option>
+              <option value="1080p">{t.exportPanel.quality1080p}</option>
+              <option value="720p">{t.exportPanel.quality720p}</option>
+              <option value="original">{t.exportPanel.qualityNative}</option>
             </select>
           </div>
           <div className="min-w-0">
-            <span className="mb-1.5 block text-xs text-zinc-300">Encuadre</span>
+            <span className="mb-1.5 block text-xs text-zinc-300">{t.exportPanel.framing}</span>
             <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
-                onClick={onToggleFitMode}
+                onClick={() => {
+                  trackEvent('fit_mode_toggle', {
+                    next_fit_mode: fitMode === 'contain' ? 'cover' : 'contain',
+                    location: 'export',
+                  });
+                  onToggleFitMode();
+                }}
+                {...gtmProps('export_fit_mode', 'export', fitMode === 'contain' ? 'fit' : 'fill')}
                 className="min-h-[40px] flex-1 rounded-lg border border-zinc-800 bg-[#09090B] px-2.5 text-xs font-medium text-zinc-200 hover:border-zinc-600 whitespace-nowrap"
               >
-                {fitMode === 'contain' ? 'Ajustar' : 'Rellenar'}
+                {fitMode === 'contain' ? t.exportPanel.fit : t.exportPanel.fill}
               </button>
               <button
                 type="button"
-                onClick={onToggleBlurBorders}
-                title="Completar bordes vacíos con desenfoque"
+                onClick={() => {
+                  trackEvent('blur_borders_toggle', {
+                    enabled: !(effects.blurBorders && fitMode === 'contain'),
+                    location: 'export',
+                  });
+                  onToggleBlurBorders();
+                }}
+                {...gtmProps('export_blur_borders', 'export', 'blur_borders')}
+                title={t.exportPanel.blurTitle}
                 aria-pressed={effects.blurBorders && fitMode === 'contain'}
                 className={`inline-flex min-h-[40px] items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium transition whitespace-nowrap shrink-0 ${
                   effects.blurBorders && fitMode === 'contain'
@@ -259,7 +299,7 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
                 }`}
               >
                 <Blend className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Blur</span>
+                <span>{t.exportPanel.blur}</span>
               </button>
             </div>
           </div>
@@ -286,20 +326,22 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
             <button
               type="button"
               onClick={handleCancelExport}
+              {...gtmProps('export_cancel_mp4', 'export', 'cancel_render')}
               className="inline-flex min-h-[38px] w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-700 text-xs font-medium text-zinc-300 hover:text-white"
             >
               <X className="h-3.5 w-3.5" />
-              <span>Cancelar renderizado</span>
+              <span>{t.exportPanel.cancelRender}</span>
             </button>
           </div>
         ) : (
           <button
             type="button"
             onClick={handleStartVideoExport}
+            {...gtmProps('export_start_mp4', 'export', t.exportPanel.renderAndExport)}
             className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-[#FAFAFA] px-5 text-sm font-semibold text-[#09090B] transition hover:bg-zinc-200 active:scale-[0.98]"
           >
             <Download className="h-4 w-4" />
-            <span>Renderizar y exportar MP4</span>
+            <span>{t.exportPanel.renderAndExport}</span>
           </button>
         )}
 
@@ -320,10 +362,12 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
             <a
               href={exportedUrl.url}
               download={exportedUrl.fileName}
+              onClick={() => trackEvent('export_mp4_redownload')}
+              {...gtmProps('export_redownload_mp4', 'export', t.exportPanel.downloadAgain)}
               className="flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-[#1C1C21] text-xs font-semibold text-white hover:border-zinc-500"
             >
               <Download className="h-3.5 w-3.5" />
-              <span>Descargar MP4 de nuevo</span>
+              <span>{t.exportPanel.downloadAgain}</span>
             </a>
           </div>
         )}
@@ -335,20 +379,24 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
           <div className="flex items-center gap-1.5">
             <FileText className="h-3.5 w-3.5 text-zinc-400" />
             <h3 className="text-xs font-semibold text-zinc-200">
-              Exportar subtítulos (.SRT)
+              {t.exportPanel.srtTitle}
             </h3>
           </div>
           <span className="font-mono text-[11px] text-zinc-500 tabular-nums">
-            {cues.length} líneas
+            {t.exportPanel.srtLines(cues.length)}
           </span>
         </div>
 
         <label className="flex cursor-pointer items-center justify-between gap-2 text-[11px] text-zinc-400">
-          <span>Ajustar tiempos tras cortes de silencio</span>
+          <span>{t.exportPanel.adjustSrtTiming}</span>
           <input
             type="checkbox"
             checked={applyCutsToSrt}
-            onChange={(e) => setApplyCutsToSrt(e.target.checked)}
+            onChange={(e) => {
+              trackEvent('export_srt_apply_cuts_toggle', { enabled: e.target.checked });
+              setApplyCutsToSrt(e.target.checked);
+            }}
+            {...gtmProps('export_srt_apply_cuts', 'export', 'adjust_srt_timing')}
             className="h-3.5 w-3.5 accent-white"
           />
         </label>
@@ -358,19 +406,21 @@ export const ExportPanel: React.FC<ExportPanelProps> = ({
             type="button"
             onClick={handleDownloadSrt}
             disabled={!srtContent}
+            {...gtmProps('export_download_srt', 'export', t.exportPanel.downloadSrt)}
             className="inline-flex min-h-[38px] flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-700 bg-[#1C1C21] px-3 text-xs font-medium text-white transition hover:border-zinc-500 disabled:opacity-40"
           >
             <Download className="h-3.5 w-3.5" />
-            <span>Descargar .SRT</span>
+            <span>{t.exportPanel.downloadSrt}</span>
           </button>
           <button
             type="button"
             onClick={handleCopySrt}
             disabled={!srtContent}
+            {...gtmProps('export_copy_srt', 'export', t.exportPanel.copy)}
             className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-lg border border-zinc-800 bg-[#09090B] px-3 text-xs font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white disabled:opacity-40"
           >
             {copiedSrt ? <Check className="h-3.5 w-3.5 text-white" /> : <Copy className="h-3.5 w-3.5" />}
-            <span>{copiedSrt ? 'Copiado' : 'Copiar'}</span>
+            <span>{copiedSrt ? t.exportPanel.copied : t.exportPanel.copy}</span>
           </button>
         </div>
       </div>

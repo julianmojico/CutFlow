@@ -5,6 +5,7 @@ import type {
   SubtitleCue,
   TimeRegion,
 } from '../types/editor';
+import { TRANSLATIONS, type UILanguage } from '../i18n/translations';
 
 export function formatTimecode(seconds: number, srt = false): string {
   const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
@@ -41,8 +42,10 @@ export function formatBytes(bytes: number): string {
 export async function analyzeVideoAudio(
   fileOrBlob: Blob,
   config: AudioAnalysisConfig,
-  fallbackDuration?: number
+  fallbackDuration?: number,
+  lang: UILanguage = 'es'
 ): Promise<AudioAnalysisResult> {
+  const dict = TRANSLATIONS[lang];
   let arrayBuffer: ArrayBuffer | null = await fileOrBlob.arrayBuffer();
   const AudioCtx =
     window.AudioContext ||
@@ -126,7 +129,7 @@ export async function analyzeVideoAudio(
               endTime: Number(e.toFixed(2)),
               kind: 'silence',
               enabled: true,
-              label: `Silencio / Pausa (${(e - s).toFixed(1)}s)`,
+              label: dict.cuts.silencePause((e - s).toFixed(1)),
             });
           }
         }
@@ -147,7 +150,7 @@ export async function analyzeVideoAudio(
             endTime: Number(e.toFixed(2)),
             kind: 'silence',
             enabled: true,
-            label: `Pausa final (${(e - s).toFixed(1)}s)`,
+            label: dict.cuts.finalPause((e - s).toFixed(1)),
           });
         }
       }
@@ -213,7 +216,7 @@ export async function analyzeVideoAudio(
               endTime: region.endTime,
               kind: 'filler',
               enabled: true,
-              label: `Posible muletilla "emm / err" (${regionDur.toFixed(2)}s)`,
+              label: dict.cuts.possibleFiller(regionDur.toFixed(2)),
               confidence: Number(confidence.toFixed(2)),
             });
           }
@@ -288,11 +291,13 @@ function encodePcmToWavBase64(pcm: Float32Array, sampleRate: number): string {
  */
 export async function extractCompactWavChunksForTranscription(
   blob: Blob,
-  maxChunkDurationSec = 240
+  maxChunkDurationSec = 240,
+  lang: UILanguage = 'es'
 ): Promise<{
   chunks: WavAudioChunk[];
   totalDuration: number;
 }> {
+  const dict = TRANSLATIONS[lang];
   let arrayBuffer: ArrayBuffer | null = await blob.arrayBuffer();
   const AudioCtx =
     window.AudioContext ||
@@ -306,9 +311,7 @@ export async function extractCompactWavChunksForTranscription(
       arrayBuffer = null;
     } catch {
       arrayBuffer = null;
-      throw new Error(
-        'No se pudo extraer una pista de audio legible de este video en el navegador.'
-      );
+      throw new Error(dict.errors.audioExtractFailed);
     }
 
     const totalDuration = decoded.duration || 1;
@@ -318,7 +321,7 @@ export async function extractCompactWavChunksForTranscription(
       (window as unknown as { webkitOfflineAudioContext?: typeof OfflineAudioContext })
         .webkitOfflineAudioContext;
     if (!OfflineCtx) {
-      throw new Error('Tu navegador no soporta procesamiento de audio sin conexión.');
+      throw new Error(dict.errors.offlineAudioUnsupported);
     }
 
     const chunks: WavAudioChunk[] = [];
